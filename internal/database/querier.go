@@ -9,8 +9,9 @@ import (
 )
 
 type Querier interface {
-	InsertJob(ctx context.Context, arg InsertJobParams) (Job, error)
-	UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, error)
+	GetJob(ctx context.Context) (GoqueueJob, error)
+	InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJob, error)
+	UpdateJob(ctx context.Context, arg UpdateJobParams) (GoqueueJob, error)
 }
 
 var _ Querier = (*Queries)(nil)

@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type Job struct {
+type GoqueueJob struct {
 	JobID      int32            `json:"job_id"`
 	CreatedAt  pgtype.Timestamp `json:"created_at"`
 	FinishedAt pgtype.Timestamp `json:"finished_at"`
