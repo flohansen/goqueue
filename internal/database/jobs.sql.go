@@ -11,8 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getJob = `-- name: GetJob :one
+SELECT job_id, created_at, finished_at, status, error, arguments
+FROM goqueue_jobs
+WHERE status = 'available'
+LIMIT 1
+`
+
+func (q *Queries) GetJob(ctx context.Context) (GoqueueJob, error) {
+	row := q.db.QueryRow(ctx, getJob)
+	var i GoqueueJob
+	err := row.Scan(
+		&i.JobID,
+		&i.CreatedAt,
+		&i.FinishedAt,
+		&i.Status,
+		&i.Error,
+		&i.Arguments,
+	)
+	return i, err
+}
+
 const insertJob = `-- name: InsertJob :one
-INSERT INTO jobs (created_at, finished_at, status, error, arguments)
+INSERT INTO goqueue_jobs (created_at, finished_at, status, error, arguments)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING job_id, created_at, finished_at, status, error, arguments
 `
@@ -25,7 +46,7 @@ type InsertJobParams struct {
 	Arguments  []byte           `json:"arguments"`
 }
 
-func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, error) {
+func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJob, error) {
 	row := q.db.QueryRow(ctx, insertJob,
 		arg.CreatedAt,
 		arg.FinishedAt,
@@ -33,7 +54,7 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 		arg.Error,
 		arg.Arguments,
 	)
-	var i Job
+	var i GoqueueJob
 	err := row.Scan(
 		&i.JobID,
 		&i.CreatedAt,
@@ -46,7 +67,7 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 }
 
 const updateJob = `-- name: UpdateJob :one
-UPDATE jobs
+UPDATE goqueue_jobs
 SET created_at = $1,
     finished_at = $2,
     status = $3,
@@ -65,7 +86,7 @@ type UpdateJobParams struct {
 	JobID      int32            `json:"job_id"`
 }
 
-func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, error) {
+func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (GoqueueJob, error) {
 	row := q.db.QueryRow(ctx, updateJob,
 		arg.CreatedAt,
 		arg.FinishedAt,
@@ -74,7 +95,7 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (Job, erro
 		arg.Arguments,
 		arg.JobID,
 	)
-	var i Job
+	var i GoqueueJob
 	err := row.Scan(
 		&i.JobID,
 		&i.CreatedAt,
