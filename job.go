@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/flohansen/goqueue/internal/database"
+	internalerrs "github.com/flohansen/goqueue/internal/errors"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -61,50 +62,69 @@ func (q *JobQueue[T]) Receive(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Second):
-			job, err := q.db.GetJob(ctx)
-			if err != nil {
-				if !errors.Is(err, pgx.ErrNoRows) {
-					q.logger.Error("failed to get job", "error", err)
+			if err := q.receive(ctx); err != nil {
+				var t *internalerrs.ErrNoJob
+				if errors.As(err, &t) {
+					continue
 				}
-				continue
-			}
 
-			var args T
-			if err := json.Unmarshal(job.Arguments, &args); err != nil {
-				q.logger.Error("failed to unmarshal job arguments", "error", err)
-				continue
-			}
-
-			if _, err := q.db.UpdateJob(ctx, database.UpdateJobParams{
-				JobID:      job.JobID,
-				CreatedAt:  job.CreatedAt,
-				FinishedAt: job.FinishedAt,
-				Status:     "pending",
-				Error:      job.Error,
-				Arguments:  job.Arguments,
-			}); err != nil {
-				q.logger.Error("failed to update job to pending state", "error", err)
-				continue
-			}
-
-			if err := q.worker.Work(ctx, &Job[T]{
-				Args: args,
-			}); err != nil {
-				q.logger.Error("worker error", "error", err)
-				continue
-			}
-
-			if _, err := q.db.UpdateJob(ctx, database.UpdateJobParams{
-				JobID:      job.JobID,
-				CreatedAt:  job.CreatedAt,
-				FinishedAt: pgtype.Timestamp{Time: time.Now(), Valid: true},
-				Status:     "finished",
-				Error:      job.Error,
-				Arguments:  job.Arguments,
-			}); err != nil {
-				q.logger.Error("failed to update job to finished state", "error", err)
-				continue
+				q.logger.Error("receive error", "error", err)
 			}
 		}
 	}
+}
+
+func (q *JobQueue[T]) receive(ctx context.Context) error {
+	job, err := q.db.GetJob(ctx)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &internalerrs.ErrNoJob{}
+		}
+
+		return &internalerrs.ErrReceiveJob{Err: err}
+	}
+
+	var args T
+	if err := json.Unmarshal(job.Arguments, &args); err != nil {
+		return &internalerrs.ErrReceiveJob{Err: err}
+	}
+
+	job, err = q.db.UpdateJob(ctx, database.UpdateJobParams{
+		JobID:      job.JobID,
+		CreatedAt:  job.CreatedAt,
+		FinishedAt: job.FinishedAt,
+		Status:     "pending",
+		Error:      job.Error,
+		Arguments:  job.Arguments,
+	})
+	if err != nil {
+		return &internalerrs.ErrUpdateJobState{
+			CurrentState: job.Status,
+			WantedState:  "pending",
+			Err:          err,
+		}
+	}
+
+	if err := q.worker.Work(ctx, &Job[T]{
+		Args: args,
+	}); err != nil {
+		return &internalerrs.ErrWorkerFailed{Err: err}
+	}
+
+	if _, err := q.db.UpdateJob(ctx, database.UpdateJobParams{
+		JobID:      job.JobID,
+		CreatedAt:  job.CreatedAt,
+		FinishedAt: pgtype.Timestamp{Time: time.Now(), Valid: true},
+		Status:     "finished",
+		Error:      job.Error,
+		Arguments:  job.Arguments,
+	}); err != nil {
+		return &internalerrs.ErrUpdateJobState{
+			CurrentState: job.Status,
+			WantedState:  "finished",
+			Err:          err,
+		}
+	}
+
+	return nil
 }
