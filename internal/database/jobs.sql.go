@@ -11,19 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const getJob = `-- name: GetJob :one
-SELECT job_id, created_at, finished_at, status, error, arguments
-FROM goqueue_jobs
-WHERE status = 'available'
-LIMIT 1
+const fetchJobLocked = `-- name: FetchJobLocked :one
+UPDATE goqueue_jobs
+SET
+    status = 'pending',
+    started_at = NOW()
+WHERE job_id = (
+    SELECT job_id
+    FROM goqueue_jobs
+    WHERE status = 'available'
+    ORDER BY created_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING job_id, created_at, started_at, finished_at, status, error, arguments
 `
 
-func (q *Queries) GetJob(ctx context.Context) (GoqueueJob, error) {
-	row := q.db.QueryRow(ctx, getJob)
+func (q *Queries) FetchJobLocked(ctx context.Context) (GoqueueJob, error) {
+	row := q.db.QueryRow(ctx, fetchJobLocked)
 	var i GoqueueJob
 	err := row.Scan(
 		&i.JobID,
 		&i.CreatedAt,
+		&i.StartedAt,
 		&i.FinishedAt,
 		&i.Status,
 		&i.Error,
@@ -33,23 +43,21 @@ func (q *Queries) GetJob(ctx context.Context) (GoqueueJob, error) {
 }
 
 const insertJob = `-- name: InsertJob :one
-INSERT INTO goqueue_jobs (created_at, finished_at, status, error, arguments)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING job_id, created_at, finished_at, status, error, arguments
+INSERT INTO goqueue_jobs (created_at, status, error, arguments)
+VALUES ($1, $2, $3, $4)
+RETURNING job_id, created_at, started_at, finished_at, status, error, arguments
 `
 
 type InsertJobParams struct {
-	CreatedAt  pgtype.Timestamp `json:"created_at"`
-	FinishedAt pgtype.Timestamp `json:"finished_at"`
-	Status     string           `json:"status"`
-	Error      pgtype.Text      `json:"error"`
-	Arguments  []byte           `json:"arguments"`
+	CreatedAt pgtype.Timestamp `json:"created_at"`
+	Status    GoqueueJobStatus `json:"status"`
+	Error     pgtype.Text      `json:"error"`
+	Arguments []byte           `json:"arguments"`
 }
 
 func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJob, error) {
 	row := q.db.QueryRow(ctx, insertJob,
 		arg.CreatedAt,
-		arg.FinishedAt,
 		arg.Status,
 		arg.Error,
 		arg.Arguments,
@@ -58,6 +66,7 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJo
 	err := row.Scan(
 		&i.JobID,
 		&i.CreatedAt,
+		&i.StartedAt,
 		&i.FinishedAt,
 		&i.Status,
 		&i.Error,
@@ -74,13 +83,13 @@ SET created_at = $1,
     error = $4,
     arguments = $5
 WHERE job_id = $6
-RETURNING job_id, created_at, finished_at, status, error, arguments
+RETURNING job_id, created_at, started_at, finished_at, status, error, arguments
 `
 
 type UpdateJobParams struct {
 	CreatedAt  pgtype.Timestamp `json:"created_at"`
 	FinishedAt pgtype.Timestamp `json:"finished_at"`
-	Status     string           `json:"status"`
+	Status     GoqueueJobStatus `json:"status"`
 	Error      pgtype.Text      `json:"error"`
 	Arguments  []byte           `json:"arguments"`
 	JobID      int32            `json:"job_id"`
@@ -99,6 +108,87 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (GoqueueJo
 	err := row.Scan(
 		&i.JobID,
 		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.Status,
+		&i.Error,
+		&i.Arguments,
+	)
+	return i, err
+}
+
+const updateJobFailed = `-- name: UpdateJobFailed :one
+UPDATE goqueue_jobs
+SET
+    status = 'failed',
+    error = $1
+WHERE job_id = $2
+RETURNING job_id, created_at, started_at, finished_at, status, error, arguments
+`
+
+type UpdateJobFailedParams struct {
+	Error pgtype.Text `json:"error"`
+	JobID int32       `json:"job_id"`
+}
+
+func (q *Queries) UpdateJobFailed(ctx context.Context, arg UpdateJobFailedParams) (GoqueueJob, error) {
+	row := q.db.QueryRow(ctx, updateJobFailed, arg.Error, arg.JobID)
+	var i GoqueueJob
+	err := row.Scan(
+		&i.JobID,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.Status,
+		&i.Error,
+		&i.Arguments,
+	)
+	return i, err
+}
+
+const updateJobFinished = `-- name: UpdateJobFinished :one
+UPDATE goqueue_jobs
+SET
+    status = 'finished',
+    finished_at = NOW()
+WHERE job_id = $1
+RETURNING job_id, created_at, started_at, finished_at, status, error, arguments
+`
+
+func (q *Queries) UpdateJobFinished(ctx context.Context, jobID int32) (GoqueueJob, error) {
+	row := q.db.QueryRow(ctx, updateJobFinished, jobID)
+	var i GoqueueJob
+	err := row.Scan(
+		&i.JobID,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.Status,
+		&i.Error,
+		&i.Arguments,
+	)
+	return i, err
+}
+
+const updateJobStatus = `-- name: UpdateJobStatus :one
+UPDATE goqueue_jobs
+SET status = $1
+WHERE job_id = $2
+RETURNING job_id, created_at, started_at, finished_at, status, error, arguments
+`
+
+type UpdateJobStatusParams struct {
+	Status GoqueueJobStatus `json:"status"`
+	JobID  int32            `json:"job_id"`
+}
+
+func (q *Queries) UpdateJobStatus(ctx context.Context, arg UpdateJobStatusParams) (GoqueueJob, error) {
+	row := q.db.QueryRow(ctx, updateJobStatus, arg.Status, arg.JobID)
+	var i GoqueueJob
+	err := row.Scan(
+		&i.JobID,
+		&i.CreatedAt,
+		&i.StartedAt,
 		&i.FinishedAt,
 		&i.Status,
 		&i.Error,

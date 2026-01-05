@@ -15,14 +15,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Worker[T any] interface {
+	Work(ctx context.Context, job *Job[T]) error
+}
+
 type JobQueue[T any] struct {
 	db     database.Querier
 	worker Worker[T]
 	logger *slog.Logger
-}
-
-type Worker[T any] interface {
-	Work(ctx context.Context, job *Job[T]) error
 }
 
 func New[T any](db database.Querier, worker Worker[T]) *JobQueue[T] {
@@ -47,7 +47,7 @@ func (q *JobQueue[T]) Send(ctx context.Context, args T) error {
 
 	if _, err := q.db.InsertJob(ctx, database.InsertJobParams{
 		CreatedAt: pgtype.Timestamp{Time: time.Now(), Valid: true},
-		Status:    "available",
+		Status:    database.GoqueueJobStatusAvailable,
 		Arguments: b,
 	}); err != nil {
 		return fmt.Errorf("failed to insert job: %w", err)
@@ -63,7 +63,7 @@ func (q *JobQueue[T]) Receive(ctx context.Context) {
 			return
 		case <-time.After(time.Second):
 			if err := q.receive(ctx); err != nil {
-				var t *internalerrs.ErrNoJob
+				var t *internalerrs.NoJobError
 				if errors.As(err, &t) {
 					continue
 				}
@@ -75,56 +75,44 @@ func (q *JobQueue[T]) Receive(ctx context.Context) {
 }
 
 func (q *JobQueue[T]) receive(ctx context.Context) error {
-	job, err := q.db.GetJob(ctx)
+	job, err := q.db.FetchJobLocked(ctx)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return &internalerrs.ErrNoJob{}
+			return &internalerrs.NoJobError{}
 		}
 
-		return &internalerrs.ErrReceiveJob{Err: err}
+		return &internalerrs.ReceiveJobError{Err: err}
 	}
 
 	var args T
 	if err := json.Unmarshal(job.Arguments, &args); err != nil {
-		return &internalerrs.ErrReceiveJob{Err: err}
-	}
-
-	job, err = q.db.UpdateJob(ctx, database.UpdateJobParams{
-		JobID:      job.JobID,
-		CreatedAt:  job.CreatedAt,
-		FinishedAt: job.FinishedAt,
-		Status:     "pending",
-		Error:      job.Error,
-		Arguments:  job.Arguments,
-	})
-	if err != nil {
-		return &internalerrs.ErrUpdateJobState{
-			CurrentState: job.Status,
-			WantedState:  "pending",
-			Err:          err,
-		}
+		q.markJobFailed(ctx, job, err)
+		return &internalerrs.ReceiveJobError{Err: err}
 	}
 
 	if err := q.worker.Work(ctx, &Job[T]{
 		Args: args,
 	}); err != nil {
-		return &internalerrs.ErrWorkerFailed{Err: err}
+		q.markJobFailed(ctx, job, err)
+		return &internalerrs.WorkerFailedError{Err: err}
 	}
 
-	if _, err := q.db.UpdateJob(ctx, database.UpdateJobParams{
-		JobID:      job.JobID,
-		CreatedAt:  job.CreatedAt,
-		FinishedAt: pgtype.Timestamp{Time: time.Now(), Valid: true},
-		Status:     "finished",
-		Error:      job.Error,
-		Arguments:  job.Arguments,
-	}); err != nil {
-		return &internalerrs.ErrUpdateJobState{
-			CurrentState: job.Status,
-			WantedState:  "finished",
+	if _, err := q.db.UpdateJobFinished(ctx, job.JobID); err != nil {
+		return &internalerrs.UpdateJobStatusError{
+			CurrentState: string(job.Status),
+			WantedState:  string(database.GoqueueJobStatusFinished),
 			Err:          err,
 		}
 	}
 
 	return nil
+}
+
+func (q *JobQueue[T]) markJobFailed(ctx context.Context, job database.GoqueueJob, err error) {
+	if _, err := q.db.UpdateJobFailed(ctx, database.UpdateJobFailedParams{
+		JobID: job.JobID,
+		Error: pgtype.Text{String: err.Error(), Valid: true},
+	}); err != nil {
+		q.logger.Error("failed to update job status to 'failed'", "jobId", job.JobID, "error", err)
+	}
 }

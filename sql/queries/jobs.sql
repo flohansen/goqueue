@@ -1,6 +1,6 @@
 -- name: InsertJob :one
-INSERT INTO goqueue_jobs (created_at, finished_at, status, error, arguments)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO goqueue_jobs (created_at, status, error, arguments)
+VALUES ($1, $2, $3, $4)
 RETURNING *;
 
 -- name: UpdateJob :one
@@ -13,8 +13,39 @@ SET created_at = $1,
 WHERE job_id = $6
 RETURNING *;
 
--- name: GetJob :one
-SELECT *
-FROM goqueue_jobs
-WHERE status = 'available'
-LIMIT 1;
+-- name: UpdateJobStatus :one
+UPDATE goqueue_jobs
+SET status = $1
+WHERE job_id = $2
+RETURNING *;
+
+-- name: UpdateJobFailed :one
+UPDATE goqueue_jobs
+SET
+    status = 'failed',
+    error = $1
+WHERE job_id = $2
+RETURNING *;
+
+-- name: UpdateJobFinished :one
+UPDATE goqueue_jobs
+SET
+    status = 'finished',
+    finished_at = NOW()
+WHERE job_id = $1
+RETURNING *;
+
+-- name: FetchJobLocked :one
+UPDATE goqueue_jobs
+SET
+    status = 'pending',
+    started_at = NOW()
+WHERE job_id = (
+    SELECT job_id
+    FROM goqueue_jobs
+    WHERE status = 'available'
+    ORDER BY created_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING *;

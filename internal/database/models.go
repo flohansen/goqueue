@@ -5,14 +5,62 @@
 package database
 
 import (
+	"database/sql/driver"
+	"fmt"
+
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type GoqueueJobStatus string
+
+const (
+	GoqueueJobStatusAvailable GoqueueJobStatus = "available"
+	GoqueueJobStatusPending   GoqueueJobStatus = "pending"
+	GoqueueJobStatusFailed    GoqueueJobStatus = "failed"
+	GoqueueJobStatusFinished  GoqueueJobStatus = "finished"
+)
+
+func (e *GoqueueJobStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = GoqueueJobStatus(s)
+	case string:
+		*e = GoqueueJobStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for GoqueueJobStatus: %T", src)
+	}
+	return nil
+}
+
+type NullGoqueueJobStatus struct {
+	GoqueueJobStatus GoqueueJobStatus `json:"goqueue_job_status"`
+	Valid            bool             `json:"valid"` // Valid is true if GoqueueJobStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullGoqueueJobStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.GoqueueJobStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.GoqueueJobStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullGoqueueJobStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.GoqueueJobStatus), nil
+}
 
 type GoqueueJob struct {
 	JobID      int32            `json:"job_id"`
 	CreatedAt  pgtype.Timestamp `json:"created_at"`
+	StartedAt  pgtype.Timestamp `json:"started_at"`
 	FinishedAt pgtype.Timestamp `json:"finished_at"`
-	Status     string           `json:"status"`
+	Status     GoqueueJobStatus `json:"status"`
 	Error      pgtype.Text      `json:"error"`
 	Arguments  []byte           `json:"arguments"`
 }
