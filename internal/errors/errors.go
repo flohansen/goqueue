@@ -2,35 +2,35 @@ package errors
 
 import "fmt"
 
-type ErrNoJob struct {
+type NoJobError struct {
 }
 
-func (e *ErrNoJob) Error() string {
+func (e *NoJobError) Error() string {
 	return "no job available"
 }
 
-type ErrReceiveJob struct {
+type ReceiveJobError struct {
 	Err error
 }
 
-func (e *ErrReceiveJob) Error() string {
+func (e *ReceiveJobError) Error() string {
 	return fmt.Sprintf("failed to get job: %v", e.Err)
 }
 
-type ErrUpdateJobState struct {
+type UpdateJobStatusError struct {
 	CurrentState string
 	WantedState  string
 	Err          error
 }
 
-func (e *ErrUpdateJobState) Error() string {
+func (e *UpdateJobStatusError) Error() string {
 	return fmt.Sprintf("failed to update job state from %q to %q: %v", e.CurrentState, e.WantedState, e.Err)
 }
 
-type ErrWorkerFailed struct {
+type WorkerFailedError struct {
 	Err error
 }
 
-func (e *ErrWorkerFailed) Error() string {
+func (e *WorkerFailedError) Error() string {
 	return fmt.Sprintf("failed to execute job: %v", e.Err)
 }
