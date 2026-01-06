@@ -36,24 +36,29 @@ func New[T any](db database.Querier, worker Worker[T]) *JobQueue[T] {
 }
 
 type Job[T any] struct {
+	ID   int32
 	Args T
 }
 
-func (q *JobQueue[T]) Send(ctx context.Context, args T) error {
+func (q *JobQueue[T]) Send(ctx context.Context, args T) (*Job[T], error) {
 	b, err := json.Marshal(args)
 	if err != nil {
-		return fmt.Errorf("failed to json encode job arguments: %w", err)
+		return nil, fmt.Errorf("failed to json encode job arguments: %w", err)
 	}
 
-	if _, err := q.db.InsertJob(ctx, database.InsertJobParams{
+	job, err := q.db.InsertJob(ctx, database.InsertJobParams{
 		CreatedAt: pgtype.Timestamp{Time: time.Now(), Valid: true},
 		Status:    database.GoqueueJobStatusAvailable,
 		Arguments: b,
-	}); err != nil {
-		return fmt.Errorf("failed to insert job: %w", err)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert job: %w", err)
 	}
 
-	return nil
+	return &Job[T]{
+		ID:   job.JobID,
+		Args: args,
+	}, nil
 }
 
 func (q *JobQueue[T]) Receive(ctx context.Context) {

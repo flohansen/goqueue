@@ -1,5 +1,6 @@
 ################################################################################
 
+GO   ?= go
 SQLC ?= sqlc
 
 ################################################################################
@@ -7,3 +8,11 @@ SQLC ?= sqlc
 .PHONY: generate
 generate:
 	$(SQLC) generate
+
+.PHONY: test
+test:
+	$(GO) test ./... -cover -v
+
+.PHONY: test-it
+test-it:
+	$(GO) test -tags=integration ./... -v
