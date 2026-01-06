@@ -40,7 +40,7 @@ type Job[T any] struct {
 	Args T
 }
 
-func (q *JobQueue[T]) Send(ctx context.Context, args T) (*Job[T], error) {
+func (q *JobQueue[T]) Enqueue(ctx context.Context, args T) (*Job[T], error) {
 	b, err := json.Marshal(args)
 	if err != nil {
 		return nil, fmt.Errorf("failed to json encode job arguments: %w", err)

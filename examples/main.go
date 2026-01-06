@@ -43,7 +43,7 @@ func main() {
 	queue := goqueue.New(database.New(db), &testWorker{})
 	go func() {
 		for range 10 {
-			queue.Send(ctx, testArgs{
+			queue.Enqueue(ctx, testArgs{
 				Value: []byte(uuid.NewString()),
 			})
 			time.Sleep(time.Second)
