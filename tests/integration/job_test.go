@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"errors"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -15,13 +17,15 @@ import (
 var _ = Describe("Job Queue Integration", func() {
 	var (
 		q *goqueue.JobQueue[testArgs]
+		w *testWorker
 	)
 
 	BeforeEach(func(ctx SpecContext) {
 		_, err := dbPool.Exec(ctx, "TRUNCATE goqueue_jobs")
 		Expect(err).NotTo(HaveOccurred())
 
-		q = goqueue.New(database.New(dbPool), &testWorker{})
+		w = &testWorker{}
+		q = goqueue.New(database.New(dbPool), w)
 	})
 
 	Describe("Enqueuing and processing jobs", func() {
@@ -30,13 +34,11 @@ var _ = Describe("Job Queue Integration", func() {
 
 			BeforeEach(func(ctx SpecContext) {
 				var err error
-				job, err = q.Enqueue(ctx, testArgs{
-					Foo: "bar",
-				})
+				job, err = q.Enqueue(ctx, testArgs{Foo: "bar"})
 				Expect(err).NotTo(HaveOccurred())
 			})
 
-			It("should be processed successfully", func(ctx SpecContext) {
+			It("should be processed and marked as finished", func(ctx SpecContext) {
 				go q.Receive(ctx)
 
 				Eventually(func() string {
@@ -45,6 +47,19 @@ var _ = Describe("Job Queue Integration", func() {
 					Expect(row.Scan(&status)).To(Succeed())
 					return status
 				}, "1m", "100ms").Should(Equal("finished"))
+			})
+
+			It("should be marked as failed", func(ctx SpecContext) {
+				w.ShouldFail = true
+				defer func() { w.ShouldFail = false }()
+				go q.Receive(ctx)
+
+				Eventually(func() string {
+					row := dbPool.QueryRow(ctx, "SELECT status FROM goqueue_jobs WHERE job_id = $1", job.ID)
+					var status string
+					Expect(row.Scan(&status)).To(Succeed())
+					return status
+				}, "1m", "100ms").Should(Equal("failed"))
 			})
 		})
 	})
@@ -56,8 +71,14 @@ type testArgs struct {
 
 type testWorker struct {
 	goqueue.Worker[testArgs]
+
+	ShouldFail bool
 }
 
 func (w *testWorker) Work(ctx context.Context, job *goqueue.Job[testArgs]) error {
+	if w.ShouldFail {
+		return errors.New("worker failed")
+	}
+
 	return nil
 }
