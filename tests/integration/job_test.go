@@ -30,7 +30,7 @@ var _ = Describe("Job Queue Integration", func() {
 
 			BeforeEach(func(ctx SpecContext) {
 				var err error
-				job, err = q.Send(ctx, testArgs{
+				job, err = q.Enqueue(ctx, testArgs{
 					Foo: "bar",
 				})
 				Expect(err).NotTo(HaveOccurred())
