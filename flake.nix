@@ -14,7 +14,7 @@
         });
       in
       {
-        devShells.default = pkgs.mkShell {
+        devShell = pkgs.mkShell {
           buildInputs = with pkgs; [
             go
             go-migrate
