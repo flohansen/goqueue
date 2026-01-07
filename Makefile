@@ -15,4 +15,4 @@ test:
 
 .PHONY: test-it
 test-it:
-	$(GO) test -tags=integration ./... -v
+	$(GO) test -tags=integration ./tests/integration/... -v
