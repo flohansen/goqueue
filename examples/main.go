@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/flohansen/goqueue"
-	"github.com/flohansen/goqueue/internal/database"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -40,7 +39,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	queue := goqueue.New(database.New(db), &testWorker{})
+	queue := goqueue.New(db, &testWorker{})
 	go func() {
 		for range 10 {
 			queue.Enqueue(ctx, testArgs{

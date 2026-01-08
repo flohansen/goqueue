@@ -25,7 +25,7 @@ var _ = Describe("Job Queue Integration", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		w = &testWorker{}
-		q = goqueue.New(database.New(dbPool), w)
+		q = goqueue.New(dbPool, w)
 	})
 
 	Describe("Enqueuing and processing jobs", func() {
@@ -60,6 +60,45 @@ var _ = Describe("Job Queue Integration", func() {
 					Expect(row.Scan(&status)).To(Succeed())
 					return status
 				}, "1m", "100ms").Should(Equal("failed"))
+			})
+
+			It("should be rescheduled", func(ctx SpecContext) {
+				w.ShouldFail = true
+				defer func() { w.ShouldFail = false }()
+				go q.Receive(ctx)
+
+				Eventually(func() string {
+					row := dbPool.QueryRow(ctx, "SELECT status FROM goqueue_jobs WHERE job_id = $1", job.ID)
+					var status string
+					Expect(row.Scan(&status)).To(Succeed())
+					return status
+				}, "1m", "100ms").Should(Equal("failed"))
+
+				w.ShouldFail = false
+
+				Eventually(func() string {
+					row := dbPool.QueryRow(ctx, "SELECT status FROM goqueue_jobs WHERE job_id = $1", job.ID)
+					var status string
+					Expect(row.Scan(&status)).To(Succeed())
+					return status
+				}, "1m", "100ms").Should(Equal("finished"))
+			})
+
+			It("should stay failed after maximum number of retries", func(ctx SpecContext) {
+				w.ShouldFail = true
+				defer func() { w.ShouldFail = false }()
+				go q.Receive(ctx)
+
+				Eventually(func() database.GoqueueJob {
+					row := dbPool.QueryRow(ctx, "SELECT status, max_retries, retry_attempt FROM goqueue_jobs WHERE job_id = $1", job.ID)
+					var job database.GoqueueJob
+					Expect(row.Scan(
+						&job.Status,
+						&job.MaxRetries,
+						&job.RetryAttempt,
+					)).To(Succeed())
+					return job
+				}, "1m", "100ms").Should(Equal(database.GoqueueJob{Status: "failed", MaxRetries: 3, RetryAttempt: 3}))
 			})
 		})
 	})

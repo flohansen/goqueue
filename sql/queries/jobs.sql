@@ -1,6 +1,6 @@
 -- name: InsertJob :one
-INSERT INTO goqueue_jobs (created_at, status, error, arguments)
-VALUES ($1, $2, $3, $4)
+INSERT INTO goqueue_jobs (created_at, status, arguments)
+VALUES (NOW(), 'available', $1)
 RETURNING *;
 
 -- name: UpdateJob :one
@@ -23,8 +23,9 @@ RETURNING *;
 UPDATE goqueue_jobs
 SET
     status = 'failed',
-    error = $1
-WHERE job_id = $2
+    next_retry_at = $1,
+    error = $2
+WHERE job_id = $3
 RETURNING *;
 
 -- name: UpdateJobFinished :one
@@ -48,4 +49,21 @@ WHERE job_id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
+RETURNING *;
+
+-- name: FetchRescheduableJobsLocked :many
+SELECT * FROM goqueue_jobs
+WHERE status = 'failed'
+  AND retry_attempt <= max_retries
+  AND NOW() >= next_retry_at
+ORDER BY created_at
+LIMIT $1
+FOR UPDATE SKIP LOCKED;
+
+-- name: RescheduleJob :one
+UPDATE goqueue_jobs
+SET
+    status = 'available',
+    retry_attempt = $1
+WHERE job_id = $2
 RETURNING *;
