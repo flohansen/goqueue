@@ -27,6 +27,7 @@ type Worker[T any] interface {
 
 type jobQueueConfig struct {
 	reconciliationInterval time.Duration
+	pollInterval           time.Duration
 }
 
 type JobQueue[T any] struct {
@@ -35,6 +36,7 @@ type JobQueue[T any] struct {
 	worker                 Worker[T]
 	logger                 *slog.Logger
 	reconciliationInterval time.Duration
+	pollInterval           time.Duration
 }
 
 func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
@@ -44,6 +46,7 @@ func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 
 	cfg := &jobQueueConfig{
 		reconciliationInterval: 30 * time.Second,
+		pollInterval:           1 * time.Second,
 	}
 
 	for _, opt := range opts {
@@ -56,6 +59,7 @@ func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 		worker:                 worker,
 		logger:                 logger,
 		reconciliationInterval: cfg.reconciliationInterval,
+		pollInterval:           cfg.pollInterval,
 	}
 }
 
@@ -88,7 +92,7 @@ func (jq *JobQueue[T]) Receive(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(time.Second):
+		case <-time.After(jq.pollInterval):
 			if err := jq.receive(ctx); err != nil {
 				var t *internalerrs.NoJobError
 				if errors.As(err, &t) {
@@ -216,5 +220,11 @@ type JobQueueOption func(*jobQueueConfig)
 func WithReconciliationInterval(interval time.Duration) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
 		jqc.reconciliationInterval = interval
+	}
+}
+
+func WithPollInterval(interval time.Duration) JobQueueOption {
+	return func(jqc *jobQueueConfig) {
+		jqc.pollInterval = interval
 	}
 }
