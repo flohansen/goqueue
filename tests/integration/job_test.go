@@ -4,6 +4,7 @@ package integration
 
 import (
 	"errors"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -25,7 +26,7 @@ var _ = Describe("Job Queue Integration", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		w = &testWorker{}
-		q = goqueue.New(dbPool, w)
+		q = goqueue.New(dbPool, w, goqueue.WithReconciliationInterval(time.Second))
 	})
 
 	Describe("Enqueuing and processing jobs", func() {

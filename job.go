@@ -25,23 +25,37 @@ type Worker[T any] interface {
 	Work(ctx context.Context, job *Job[T]) error
 }
 
-type JobQueue[T any] struct {
-	db     DB
-	q      database.Querier
-	worker Worker[T]
-	logger *slog.Logger
+type jobQueueConfig struct {
+	reconciliationInterval time.Duration
 }
 
-func New[T any](db DB, worker Worker[T]) *JobQueue[T] {
+type JobQueue[T any] struct {
+	db                     DB
+	q                      database.Querier
+	worker                 Worker[T]
+	logger                 *slog.Logger
+	reconciliationInterval time.Duration
+}
+
+func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 
+	cfg := &jobQueueConfig{
+		reconciliationInterval: 30 * time.Second,
+	}
+
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	return &JobQueue[T]{
-		db:     db,
-		q:      database.New(db),
-		worker: worker,
-		logger: logger,
+		db:                     db,
+		q:                      database.New(db),
+		worker:                 worker,
+		logger:                 logger,
+		reconciliationInterval: cfg.reconciliationInterval,
 	}
 }
 
@@ -68,15 +82,7 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T) (*Job[T], error) {
 }
 
 func (jq *JobQueue[T]) Receive(ctx context.Context) {
-	go func() {
-		for {
-			time.Sleep(time.Second)
-			if err := jq.reconcile(ctx); err != nil {
-				jq.logger.Error("reconciliation failed", "error", err)
-				continue
-			}
-		}
-	}()
+	go jq.reconciliationLoop(ctx)
 
 	for {
 		select {
@@ -145,6 +151,23 @@ func (jq *JobQueue[T]) calculateNextRetry(job database.GoqueueJob) time.Time {
 	return time.Now().Add(delay)
 }
 
+func (jq *JobQueue[T]) reconciliationLoop(ctx context.Context) {
+	ticker := time.NewTicker(jq.reconciliationInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			jq.logger.Info("reconciliation stopped")
+			return
+		case <-ticker.C:
+			if err := jq.reconcile(ctx); err != nil {
+				jq.logger.Error("reconciliation failed", "error", err)
+			}
+		}
+	}
+}
+
 func (jq *JobQueue[T]) reconcile(ctx context.Context) error {
 	tx, err := jq.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -186,4 +209,12 @@ func (jq *JobQueue[T]) rescheduleJob(ctx context.Context, q database.Querier, jo
 	}
 
 	return nil
+}
+
+type JobQueueOption func(*jobQueueConfig)
+
+func WithReconciliationInterval(interval time.Duration) JobQueueOption {
+	return func(jqc *jobQueueConfig) {
+		jqc.reconciliationInterval = interval
+	}
 }
