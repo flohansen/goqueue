@@ -25,11 +25,6 @@ type Worker[T any] interface {
 	Work(ctx context.Context, job *Job[T]) error
 }
 
-type jobQueueConfig struct {
-	reconciliationInterval time.Duration
-	pollInterval           time.Duration
-}
-
 type JobQueue[T any] struct {
 	db                     DB
 	q                      database.Querier
@@ -213,6 +208,11 @@ func (jq *JobQueue[T]) rescheduleJob(ctx context.Context, q database.Querier, jo
 	}
 
 	return nil
+}
+
+type jobQueueConfig struct {
+	reconciliationInterval time.Duration
+	pollInterval           time.Duration
 }
 
 type JobQueueOption func(*jobQueueConfig)
