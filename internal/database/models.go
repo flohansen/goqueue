@@ -56,11 +56,14 @@ func (ns NullGoqueueJobStatus) Value() (driver.Value, error) {
 }
 
 type GoqueueJob struct {
-	JobID      int32            `json:"job_id"`
-	CreatedAt  pgtype.Timestamp `json:"created_at"`
-	StartedAt  pgtype.Timestamp `json:"started_at"`
-	FinishedAt pgtype.Timestamp `json:"finished_at"`
-	Status     GoqueueJobStatus `json:"status"`
-	Error      pgtype.Text      `json:"error"`
-	Arguments  []byte           `json:"arguments"`
+	JobID        int32            `json:"job_id"`
+	CreatedAt    pgtype.Timestamp `json:"created_at"`
+	StartedAt    pgtype.Timestamp `json:"started_at"`
+	FinishedAt   pgtype.Timestamp `json:"finished_at"`
+	NextRetryAt  pgtype.Timestamp `json:"next_retry_at"`
+	MaxRetries   int32            `json:"max_retries"`
+	RetryAttempt int32            `json:"retry_attempt"`
+	Status       GoqueueJobStatus `json:"status"`
+	Error        pgtype.Text      `json:"error"`
+	Arguments    []byte           `json:"arguments"`
 }

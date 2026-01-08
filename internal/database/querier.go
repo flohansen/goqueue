@@ -10,7 +10,9 @@ import (
 
 type Querier interface {
 	FetchJobLocked(ctx context.Context) (GoqueueJob, error)
-	InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJob, error)
+	FetchRescheduableJobsLocked(ctx context.Context, limit int32) ([]GoqueueJob, error)
+	InsertJob(ctx context.Context, arguments []byte) (GoqueueJob, error)
+	RescheduleJob(ctx context.Context, arg RescheduleJobParams) (GoqueueJob, error)
 	UpdateJob(ctx context.Context, arg UpdateJobParams) (GoqueueJob, error)
 	UpdateJobFailed(ctx context.Context, arg UpdateJobFailedParams) (GoqueueJob, error)
 	UpdateJobFinished(ctx context.Context, jobID int32) (GoqueueJob, error)
