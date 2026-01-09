@@ -100,6 +100,7 @@ func (ns NullGoqueueRetryPolicy) Value() (driver.Value, error) {
 
 type GoqueueJob struct {
 	JobID        int32              `json:"job_id"`
+	QueueName    string             `json:"queue_name"`
 	CreatedAt    pgtype.Timestamp   `json:"created_at"`
 	StartedAt    pgtype.Timestamp   `json:"started_at"`
 	FinishedAt   pgtype.Timestamp   `json:"finished_at"`

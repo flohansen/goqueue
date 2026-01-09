@@ -13,6 +13,7 @@ CREATE TYPE goqueue_job_status AS ENUM (
 
 CREATE TABLE IF NOT EXISTS goqueue_jobs (
   job_id SERIAL PRIMARY KEY,
+  queue_name TEXT NOT NULL,
   created_at TIMESTAMP NOT NULL,
   started_at TIMESTAMP,
   finished_at TIMESTAMP,
@@ -25,4 +26,5 @@ CREATE TABLE IF NOT EXISTS goqueue_jobs (
   arguments JSONB NOT NULL
 );
 
-CREATE INDEX idx_goqueue_jobs_job_status ON goqueue_jobs(status);
+CREATE INDEX idx_goqueue_jobs_status ON goqueue_jobs(status);
+CREATE INDEX idx_goqueue_jobs_queue_name ON goqueue_jobs(queue_name);
