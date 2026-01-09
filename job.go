@@ -63,13 +63,25 @@ type Job[T any] struct {
 	Args T
 }
 
-func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T) (*Job[T], error) {
+func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOption) (*Job[T], error) {
 	b, err := json.Marshal(args)
 	if err != nil {
 		return nil, fmt.Errorf("failed to json encode job arguments: %w", err)
 	}
 
-	job, err := jq.q.InsertJob(ctx, b)
+	cfg := &enqueueConfig{
+		maxRetries:  3,
+		retryPolicy: database.GoqueueRetryPolicyExponential,
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	job, err := jq.q.InsertJob(ctx, database.InsertJobParams{
+		Arguments:   b,
+		MaxRetries:  cfg.maxRetries,
+		RetryPolicy: cfg.retryPolicy,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert job: %w", err)
 	}
@@ -135,19 +147,27 @@ func (jq *JobQueue[T]) receive(ctx context.Context) error {
 }
 
 func (jq *JobQueue[T]) markJobFailed(ctx context.Context, job database.GoqueueJob, err error) {
-	nextRetryTime := jq.calculateNextRetry(job)
+	nextRetryDelay := jq.calcNextRetryDelay(job)
 	if _, err := jq.q.UpdateJobFailed(ctx, database.UpdateJobFailedParams{
 		JobID:       job.JobID,
 		Error:       pgtype.Text{String: err.Error(), Valid: true},
-		NextRetryAt: pgtype.Timestamp{Time: nextRetryTime.UTC(), Valid: true},
+		NextRetryAt: pgtype.Timestamp{Time: time.Now().Add(nextRetryDelay).UTC(), Valid: true},
 	}); err != nil {
 		jq.logger.Error("failed to update job status to 'failed'", "jobId", job.JobID, "error", err)
 	}
 }
 
-func (jq *JobQueue[T]) calculateNextRetry(job database.GoqueueJob) time.Time {
-	delay := time.Duration(math.Pow(2.0, float64(job.RetryAttempt+1))) * time.Second
-	return time.Now().Add(delay)
+func (jq *JobQueue[T]) calcNextRetryDelay(job database.GoqueueJob) time.Duration {
+	delay := 2 * time.Second
+	switch job.RetryPolicy {
+	case database.GoqueueRetryPolicyConstant:
+	case database.GoqueueRetryPolicyLinear:
+		delay = delay * time.Duration(job.RetryAttempt+1)
+	case database.GoqueueRetryPolicyExponential:
+		delay = time.Duration(math.Pow(delay.Seconds(), float64(job.RetryAttempt+1))) * time.Second
+	}
+
+	return delay
 }
 
 func (jq *JobQueue[T]) reconciliationLoop(ctx context.Context) {
@@ -228,3 +248,37 @@ func WithPollInterval(interval time.Duration) JobQueueOption {
 		jqc.pollInterval = interval
 	}
 }
+
+type enqueueConfig struct {
+	maxRetries  int32
+	retryPolicy database.GoqueueRetryPolicy
+}
+
+type EnqueueOption func(*enqueueConfig)
+
+func WithMaxRetries(n int32) EnqueueOption {
+	return func(ec *enqueueConfig) {
+		ec.maxRetries = n
+	}
+}
+
+func WithRetryPolicy(policy RetryPolicy) EnqueueOption {
+	return func(ec *enqueueConfig) {
+		switch policy {
+		case RetryPolicyConstant:
+			ec.retryPolicy = database.GoqueueRetryPolicyConstant
+		case RetryPolicyLinear:
+			ec.retryPolicy = database.GoqueueRetryPolicyLinear
+		case RetryPolicyExponential:
+			ec.retryPolicy = database.GoqueueRetryPolicyExponential
+		}
+	}
+}
+
+type RetryPolicy int
+
+const (
+	RetryPolicyConstant RetryPolicy = iota
+	RetryPolicyLinear
+	RetryPolicyExponential
+)

@@ -1,6 +1,6 @@
 -- name: InsertJob :one
-INSERT INTO goqueue_jobs (created_at, status, arguments)
-VALUES (NOW(), 'available', $1)
+INSERT INTO goqueue_jobs (created_at, status, arguments, max_retries, retry_policy)
+VALUES (NOW(), 'available', $1, $2, $3)
 RETURNING *;
 
 -- name: UpdateJob :one
