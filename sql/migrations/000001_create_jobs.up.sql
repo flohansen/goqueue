@@ -6,7 +6,7 @@ CREATE TYPE goqueue_retry_policy AS ENUM (
 
 CREATE TYPE goqueue_job_status AS ENUM (
   'available',
-  'pending',
+  'running',
   'failed',
   'finished'
 );

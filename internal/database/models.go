@@ -15,7 +15,7 @@ type GoqueueJobStatus string
 
 const (
 	GoqueueJobStatusAvailable GoqueueJobStatus = "available"
-	GoqueueJobStatusPending   GoqueueJobStatus = "pending"
+	GoqueueJobStatusRunning   GoqueueJobStatus = "running"
 	GoqueueJobStatusFailed    GoqueueJobStatus = "failed"
 	GoqueueJobStatusFinished  GoqueueJobStatus = "finished"
 )
