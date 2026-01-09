@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS goqueue_jobs (
   created_at TIMESTAMP NOT NULL,
   started_at TIMESTAMP,
   finished_at TIMESTAMP,
-  next_retry_at TIMESTAMP,
+  scheduled_at TIMESTAMP,
   max_retries INTEGER NOT NULL DEFAULT 3,
   retry_attempt INTEGER NOT NULL DEFAULT 0,
   retry_policy goqueue_retry_policy NOT NULL DEFAULT 'exponential',
