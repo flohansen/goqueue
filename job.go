@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"os"
 	"time"
 
 	"github.com/flohansen/goqueue/internal/database"
@@ -32,16 +31,17 @@ type JobQueue[T any] struct {
 	logger                 *slog.Logger
 	reconciliationInterval time.Duration
 	pollInterval           time.Duration
+	baseRetryDelay         time.Duration
+	maxRetryDelay          time.Duration
 }
 
 func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-
 	cfg := &jobQueueConfig{
+		logger:                 slog.Default(),
 		reconciliationInterval: 30 * time.Second,
 		pollInterval:           1 * time.Second,
+		baseRetryDelay:         2 * time.Second,
+		maxRetryDelay:          1 * time.Hour,
 	}
 
 	for _, opt := range opts {
@@ -52,9 +52,11 @@ func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 		db:                     db,
 		q:                      database.New(db),
 		worker:                 worker,
-		logger:                 logger,
+		logger:                 cfg.logger,
 		reconciliationInterval: cfg.reconciliationInterval,
 		pollInterval:           cfg.pollInterval,
+		baseRetryDelay:         cfg.baseRetryDelay,
+		maxRetryDelay:          cfg.maxRetryDelay,
 	}
 }
 
@@ -153,18 +155,23 @@ func (jq *JobQueue[T]) markJobFailed(ctx context.Context, job database.GoqueueJo
 		Error:       pgtype.Text{String: err.Error(), Valid: true},
 		NextRetryAt: pgtype.Timestamp{Time: time.Now().Add(nextRetryDelay).UTC(), Valid: true},
 	}); err != nil {
-		jq.logger.Error("failed to update job status to 'failed'", "jobId", job.JobID, "error", err)
+		jq.logger.Error("failed to update job status to 'failed'", "job_id", job.JobID, "error", err)
 	}
 }
 
 func (jq *JobQueue[T]) calcNextRetryDelay(job database.GoqueueJob) time.Duration {
-	delay := 2 * time.Second
+	delay := jq.baseRetryDelay
+
 	switch job.RetryPolicy {
 	case database.GoqueueRetryPolicyConstant:
 	case database.GoqueueRetryPolicyLinear:
 		delay = delay * time.Duration(job.RetryAttempt+1)
 	case database.GoqueueRetryPolicyExponential:
 		delay = time.Duration(math.Pow(delay.Seconds(), float64(job.RetryAttempt+1))) * time.Second
+	}
+
+	if delay > jq.maxRetryDelay {
+		delay = jq.maxRetryDelay
 	}
 
 	return delay
@@ -203,7 +210,8 @@ func (jq *JobQueue[T]) reconcile(ctx context.Context) error {
 
 	for _, job := range jobs {
 		if err := jq.rescheduleJob(ctx, dtx, job); err != nil {
-			return fmt.Errorf("failed to reschedule job batch: %w", err)
+			jq.logger.Error("failed to reschedule job", "job_id", job.JobID, "error", err)
+			continue
 		}
 	}
 
@@ -231,11 +239,20 @@ func (jq *JobQueue[T]) rescheduleJob(ctx context.Context, q database.Querier, jo
 }
 
 type jobQueueConfig struct {
+	logger                 *slog.Logger
 	reconciliationInterval time.Duration
 	pollInterval           time.Duration
+	baseRetryDelay         time.Duration
+	maxRetryDelay          time.Duration
 }
 
 type JobQueueOption func(*jobQueueConfig)
+
+func WithLogger(logger *slog.Logger) JobQueueOption {
+	return func(jqc *jobQueueConfig) {
+		jqc.logger = logger
+	}
+}
 
 func WithReconciliationInterval(interval time.Duration) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
@@ -246,6 +263,18 @@ func WithReconciliationInterval(interval time.Duration) JobQueueOption {
 func WithPollInterval(interval time.Duration) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
 		jqc.pollInterval = interval
+	}
+}
+
+func WithBaseRetryDelay(d time.Duration) JobQueueOption {
+	return func(jqc *jobQueueConfig) {
+		jqc.baseRetryDelay = d
+	}
+}
+
+func WithMaxRetryDelay(d time.Duration) JobQueueOption {
+	return func(jqc *jobQueueConfig) {
+		jqc.maxRetryDelay = d
 	}
 }
 
