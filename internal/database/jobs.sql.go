@@ -14,7 +14,7 @@ import (
 const fetchJobLocked = `-- name: FetchJobLocked :one
 UPDATE goqueue_jobs AS j
 SET
-    status = 'pending',
+    status = 'running',
     retry_attempt = j.retry_attempt + 1,
     started_at = NOW()
 WHERE job_id = (
