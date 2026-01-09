@@ -15,17 +15,12 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type DB interface {
-	database.DBTX
-	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
-}
-
 type Worker[T any] interface {
 	Work(ctx context.Context, job *Job[T]) error
 }
 
 type JobQueue[T any] struct {
-	db             DB
+	db             database.DBTX
 	q              database.Querier
 	worker         Worker[T]
 	queueName      string
@@ -35,7 +30,7 @@ type JobQueue[T any] struct {
 	maxRetryDelay  time.Duration
 }
 
-func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
+func New[T any](db database.DBTX, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 	cfg := &jobQueueConfig{
 		queueName:      "default",
 		logger:         slog.Default(),
