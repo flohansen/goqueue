@@ -41,7 +41,6 @@ func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 		baseRetryDelay: 2 * time.Second,
 		maxRetryDelay:  1 * time.Hour,
 	}
-
 	for _, opt := range opts {
 		opt(cfg)
 	}
