@@ -9,7 +9,7 @@ import (
 )
 
 type Querier interface {
-	FetchJobLocked(ctx context.Context) (GoqueueJob, error)
+	FetchJobLocked(ctx context.Context, queueName string) (GoqueueJob, error)
 	InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJob, error)
 	RescheduleJob(ctx context.Context, arg RescheduleJobParams) (GoqueueJob, error)
 	UpdateJob(ctx context.Context, arg UpdateJobParams) (GoqueueJob, error)

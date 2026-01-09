@@ -28,6 +28,7 @@ type JobQueue[T any] struct {
 	db             DB
 	q              database.Querier
 	worker         Worker[T]
+	queueName      string
 	logger         *slog.Logger
 	pollInterval   time.Duration
 	baseRetryDelay time.Duration
@@ -36,6 +37,7 @@ type JobQueue[T any] struct {
 
 func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 	cfg := &jobQueueConfig{
+		queueName:      "default",
 		logger:         slog.Default(),
 		pollInterval:   1 * time.Second,
 		baseRetryDelay: 2 * time.Second,
@@ -49,6 +51,7 @@ func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 		db:             db,
 		q:              database.New(db),
 		worker:         worker,
+		queueName:      cfg.queueName,
 		logger:         cfg.logger,
 		pollInterval:   cfg.pollInterval,
 		baseRetryDelay: cfg.baseRetryDelay,
@@ -76,6 +79,7 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 	}
 
 	job, err := jq.q.InsertJob(ctx, database.InsertJobParams{
+		QueueName:   jq.queueName,
 		Arguments:   b,
 		MaxRetries:  cfg.maxRetries,
 		RetryPolicy: cfg.retryPolicy,
@@ -110,7 +114,7 @@ func (jq *JobQueue[T]) Receive(ctx context.Context) {
 }
 
 func (jq *JobQueue[T]) receive(ctx context.Context) error {
-	job, err := jq.q.FetchJobLocked(ctx)
+	job, err := jq.q.FetchJobLocked(ctx, jq.queueName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &internalerrs.NoJobError{}
@@ -185,6 +189,7 @@ func (jq *JobQueue[T]) calcNextRetryDelay(job database.GoqueueJob) time.Duration
 }
 
 type jobQueueConfig struct {
+	queueName      string
 	logger         *slog.Logger
 	pollInterval   time.Duration
 	baseRetryDelay time.Duration
@@ -214,6 +219,12 @@ func WithBaseRetryDelay(d time.Duration) JobQueueOption {
 func WithMaxRetryDelay(d time.Duration) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
 		jqc.maxRetryDelay = d
+	}
+}
+
+func WithQueueName(name string) JobQueueOption {
+	return func(jqc *jobQueueConfig) {
+		jqc.queueName = name
 	}
 }
 
