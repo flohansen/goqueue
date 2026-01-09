@@ -103,7 +103,7 @@ type GoqueueJob struct {
 	CreatedAt    pgtype.Timestamp   `json:"created_at"`
 	StartedAt    pgtype.Timestamp   `json:"started_at"`
 	FinishedAt   pgtype.Timestamp   `json:"finished_at"`
-	NextRetryAt  pgtype.Timestamp   `json:"next_retry_at"`
+	ScheduledAt  pgtype.Timestamp   `json:"scheduled_at"`
 	MaxRetries   int32              `json:"max_retries"`
 	RetryAttempt int32              `json:"retry_attempt"`
 	RetryPolicy  GoqueueRetryPolicy `json:"retry_policy"`

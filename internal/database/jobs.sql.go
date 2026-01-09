@@ -15,16 +15,19 @@ const fetchJobLocked = `-- name: FetchJobLocked :one
 UPDATE goqueue_jobs
 SET
     status = 'pending',
+    retry_attempt = retry_attempt + 1,
     started_at = NOW()
 WHERE job_id = (
     SELECT job_id
     FROM goqueue_jobs
     WHERE status = 'available'
+      AND scheduled_at <= NOW()
     ORDER BY created_at
     LIMIT 1
-    FOR UPDATE SKIP LOCKED
+    FOR UPDATE
+    SKIP LOCKED
 )
-RETURNING job_id, created_at, started_at, finished_at, next_retry_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
 `
 
 func (q *Queries) FetchJobLocked(ctx context.Context) (GoqueueJob, error) {
@@ -35,7 +38,7 @@ func (q *Queries) FetchJobLocked(ctx context.Context) (GoqueueJob, error) {
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
-		&i.NextRetryAt,
+		&i.ScheduledAt,
 		&i.MaxRetries,
 		&i.RetryAttempt,
 		&i.RetryPolicy,
@@ -46,69 +49,33 @@ func (q *Queries) FetchJobLocked(ctx context.Context) (GoqueueJob, error) {
 	return i, err
 }
 
-const fetchRescheduableJobsLocked = `-- name: FetchRescheduableJobsLocked :many
-SELECT job_id, created_at, started_at, finished_at, next_retry_at, max_retries, retry_attempt, retry_policy, status, error, arguments FROM goqueue_jobs
-WHERE status = 'failed'
-  AND retry_attempt <= max_retries
-  AND NOW() >= next_retry_at
-ORDER BY created_at
-LIMIT $1
-FOR UPDATE SKIP LOCKED
-`
-
-func (q *Queries) FetchRescheduableJobsLocked(ctx context.Context, limit int32) ([]GoqueueJob, error) {
-	rows, err := q.db.Query(ctx, fetchRescheduableJobsLocked, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []GoqueueJob
-	for rows.Next() {
-		var i GoqueueJob
-		if err := rows.Scan(
-			&i.JobID,
-			&i.CreatedAt,
-			&i.StartedAt,
-			&i.FinishedAt,
-			&i.NextRetryAt,
-			&i.MaxRetries,
-			&i.RetryAttempt,
-			&i.RetryPolicy,
-			&i.Status,
-			&i.Error,
-			&i.Arguments,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const insertJob = `-- name: InsertJob :one
-INSERT INTO goqueue_jobs (created_at, status, arguments, max_retries, retry_policy)
-VALUES (NOW(), 'available', $1, $2, $3)
-RETURNING job_id, created_at, started_at, finished_at, next_retry_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+INSERT INTO goqueue_jobs (created_at, status, scheduled_at, arguments, max_retries, retry_policy)
+VALUES (NOW(), 'available', $1, $2, $3, $4)
+RETURNING job_id, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
 `
 
 type InsertJobParams struct {
+	ScheduledAt pgtype.Timestamp   `json:"scheduled_at"`
 	Arguments   []byte             `json:"arguments"`
 	MaxRetries  int32              `json:"max_retries"`
 	RetryPolicy GoqueueRetryPolicy `json:"retry_policy"`
 }
 
 func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJob, error) {
-	row := q.db.QueryRow(ctx, insertJob, arg.Arguments, arg.MaxRetries, arg.RetryPolicy)
+	row := q.db.QueryRow(ctx, insertJob,
+		arg.ScheduledAt,
+		arg.Arguments,
+		arg.MaxRetries,
+		arg.RetryPolicy,
+	)
 	var i GoqueueJob
 	err := row.Scan(
 		&i.JobID,
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
-		&i.NextRetryAt,
+		&i.ScheduledAt,
 		&i.MaxRetries,
 		&i.RetryAttempt,
 		&i.RetryPolicy,
@@ -123,25 +90,25 @@ const rescheduleJob = `-- name: RescheduleJob :one
 UPDATE goqueue_jobs
 SET
     status = 'available',
-    retry_attempt = $1
+    scheduled_at = $1
 WHERE job_id = $2
-RETURNING job_id, created_at, started_at, finished_at, next_retry_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
 `
 
 type RescheduleJobParams struct {
-	RetryAttempt int32 `json:"retry_attempt"`
-	JobID        int32 `json:"job_id"`
+	ScheduledAt pgtype.Timestamp `json:"scheduled_at"`
+	JobID       int32            `json:"job_id"`
 }
 
 func (q *Queries) RescheduleJob(ctx context.Context, arg RescheduleJobParams) (GoqueueJob, error) {
-	row := q.db.QueryRow(ctx, rescheduleJob, arg.RetryAttempt, arg.JobID)
+	row := q.db.QueryRow(ctx, rescheduleJob, arg.ScheduledAt, arg.JobID)
 	var i GoqueueJob
 	err := row.Scan(
 		&i.JobID,
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
-		&i.NextRetryAt,
+		&i.ScheduledAt,
 		&i.MaxRetries,
 		&i.RetryAttempt,
 		&i.RetryPolicy,
@@ -160,7 +127,7 @@ SET created_at = $1,
     error = $4,
     arguments = $5
 WHERE job_id = $6
-RETURNING job_id, created_at, started_at, finished_at, next_retry_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
 `
 
 type UpdateJobParams struct {
@@ -187,7 +154,7 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (GoqueueJo
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
-		&i.NextRetryAt,
+		&i.ScheduledAt,
 		&i.MaxRetries,
 		&i.RetryAttempt,
 		&i.RetryPolicy,
@@ -202,27 +169,25 @@ const updateJobFailed = `-- name: UpdateJobFailed :one
 UPDATE goqueue_jobs
 SET
     status = 'failed',
-    next_retry_at = $1,
-    error = $2
-WHERE job_id = $3
-RETURNING job_id, created_at, started_at, finished_at, next_retry_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+    error = $1
+WHERE job_id = $2
+RETURNING job_id, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
 `
 
 type UpdateJobFailedParams struct {
-	NextRetryAt pgtype.Timestamp `json:"next_retry_at"`
-	Error       pgtype.Text      `json:"error"`
-	JobID       int32            `json:"job_id"`
+	Error pgtype.Text `json:"error"`
+	JobID int32       `json:"job_id"`
 }
 
 func (q *Queries) UpdateJobFailed(ctx context.Context, arg UpdateJobFailedParams) (GoqueueJob, error) {
-	row := q.db.QueryRow(ctx, updateJobFailed, arg.NextRetryAt, arg.Error, arg.JobID)
+	row := q.db.QueryRow(ctx, updateJobFailed, arg.Error, arg.JobID)
 	var i GoqueueJob
 	err := row.Scan(
 		&i.JobID,
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
-		&i.NextRetryAt,
+		&i.ScheduledAt,
 		&i.MaxRetries,
 		&i.RetryAttempt,
 		&i.RetryPolicy,
@@ -239,7 +204,7 @@ SET
     status = 'finished',
     finished_at = NOW()
 WHERE job_id = $1
-RETURNING job_id, created_at, started_at, finished_at, next_retry_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
 `
 
 func (q *Queries) UpdateJobFinished(ctx context.Context, jobID int32) (GoqueueJob, error) {
@@ -250,7 +215,7 @@ func (q *Queries) UpdateJobFinished(ctx context.Context, jobID int32) (GoqueueJo
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
-		&i.NextRetryAt,
+		&i.ScheduledAt,
 		&i.MaxRetries,
 		&i.RetryAttempt,
 		&i.RetryPolicy,
@@ -265,7 +230,7 @@ const updateJobStatus = `-- name: UpdateJobStatus :one
 UPDATE goqueue_jobs
 SET status = $1
 WHERE job_id = $2
-RETURNING job_id, created_at, started_at, finished_at, next_retry_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
 `
 
 type UpdateJobStatusParams struct {
@@ -281,7 +246,7 @@ func (q *Queries) UpdateJobStatus(ctx context.Context, arg UpdateJobStatusParams
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
-		&i.NextRetryAt,
+		&i.ScheduledAt,
 		&i.MaxRetries,
 		&i.RetryAttempt,
 		&i.RetryPolicy,

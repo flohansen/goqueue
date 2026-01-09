@@ -25,23 +25,21 @@ type Worker[T any] interface {
 }
 
 type JobQueue[T any] struct {
-	db                     DB
-	q                      database.Querier
-	worker                 Worker[T]
-	logger                 *slog.Logger
-	reconciliationInterval time.Duration
-	pollInterval           time.Duration
-	baseRetryDelay         time.Duration
-	maxRetryDelay          time.Duration
+	db             DB
+	q              database.Querier
+	worker         Worker[T]
+	logger         *slog.Logger
+	pollInterval   time.Duration
+	baseRetryDelay time.Duration
+	maxRetryDelay  time.Duration
 }
 
 func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 	cfg := &jobQueueConfig{
-		logger:                 slog.Default(),
-		reconciliationInterval: 30 * time.Second,
-		pollInterval:           1 * time.Second,
-		baseRetryDelay:         2 * time.Second,
-		maxRetryDelay:          1 * time.Hour,
+		logger:         slog.Default(),
+		pollInterval:   1 * time.Second,
+		baseRetryDelay: 2 * time.Second,
+		maxRetryDelay:  1 * time.Hour,
 	}
 
 	for _, opt := range opts {
@@ -49,14 +47,13 @@ func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 	}
 
 	return &JobQueue[T]{
-		db:                     db,
-		q:                      database.New(db),
-		worker:                 worker,
-		logger:                 cfg.logger,
-		reconciliationInterval: cfg.reconciliationInterval,
-		pollInterval:           cfg.pollInterval,
-		baseRetryDelay:         cfg.baseRetryDelay,
-		maxRetryDelay:          cfg.maxRetryDelay,
+		db:             db,
+		q:              database.New(db),
+		worker:         worker,
+		logger:         cfg.logger,
+		pollInterval:   cfg.pollInterval,
+		baseRetryDelay: cfg.baseRetryDelay,
+		maxRetryDelay:  cfg.maxRetryDelay,
 	}
 }
 
@@ -83,6 +80,7 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 		Arguments:   b,
 		MaxRetries:  cfg.maxRetries,
 		RetryPolicy: cfg.retryPolicy,
+		ScheduledAt: pgtype.Timestamp{Time: time.Now().UTC(), Valid: true},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert job: %w", err)
@@ -95,8 +93,6 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 }
 
 func (jq *JobQueue[T]) Receive(ctx context.Context) {
-	go jq.reconciliationLoop(ctx)
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -133,7 +129,11 @@ func (jq *JobQueue[T]) receive(ctx context.Context) error {
 	if err := jq.worker.Work(ctx, &Job[T]{
 		Args: args,
 	}); err != nil {
-		jq.markJobFailed(ctx, job, err)
+		if job.RetryAttempt < job.MaxRetries {
+			jq.retryJob(ctx, job)
+		} else {
+			jq.markJobFailed(ctx, job, errors.New("maximum number of retries reached"))
+		}
 		return &internalerrs.WorkerFailedError{Err: err}
 	}
 
@@ -148,12 +148,20 @@ func (jq *JobQueue[T]) receive(ctx context.Context) error {
 	return nil
 }
 
-func (jq *JobQueue[T]) markJobFailed(ctx context.Context, job database.GoqueueJob, err error) {
+func (jq *JobQueue[T]) retryJob(ctx context.Context, job database.GoqueueJob) {
 	nextRetryDelay := jq.calcNextRetryDelay(job)
-	if _, err := jq.q.UpdateJobFailed(ctx, database.UpdateJobFailedParams{
+	if _, err := jq.q.RescheduleJob(ctx, database.RescheduleJobParams{
 		JobID:       job.JobID,
-		Error:       pgtype.Text{String: err.Error(), Valid: true},
-		NextRetryAt: pgtype.Timestamp{Time: time.Now().Add(nextRetryDelay).UTC(), Valid: true},
+		ScheduledAt: pgtype.Timestamp{Time: time.Now().Add(nextRetryDelay).UTC(), Valid: true},
+	}); err != nil {
+		jq.logger.Error("failed to retry job", "job_id", job.JobID, "error", err)
+	}
+}
+
+func (jq *JobQueue[T]) markJobFailed(ctx context.Context, job database.GoqueueJob, err error) {
+	if _, err := jq.q.UpdateJobFailed(ctx, database.UpdateJobFailedParams{
+		JobID: job.JobID,
+		Error: pgtype.Text{String: err.Error(), Valid: true},
 	}); err != nil {
 		jq.logger.Error("failed to update job status to 'failed'", "job_id", job.JobID, "error", err)
 	}
@@ -177,73 +185,11 @@ func (jq *JobQueue[T]) calcNextRetryDelay(job database.GoqueueJob) time.Duration
 	return delay
 }
 
-func (jq *JobQueue[T]) reconciliationLoop(ctx context.Context) {
-	ticker := time.NewTicker(jq.reconciliationInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			jq.logger.Info("reconciliation stopped")
-			return
-		case <-ticker.C:
-			if err := jq.reconcile(ctx); err != nil {
-				jq.logger.Error("reconciliation failed", "error", err)
-			}
-		}
-	}
-}
-
-func (jq *JobQueue[T]) reconcile(ctx context.Context) error {
-	tx, err := jq.db.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	dtx := database.New(jq.db).WithTx(tx)
-
-	jobs, err := dtx.FetchRescheduableJobsLocked(ctx, 100)
-	if err != nil {
-		return fmt.Errorf("failed to get rescheduable jobs: %w", err)
-	}
-
-	for _, job := range jobs {
-		if err := jq.rescheduleJob(ctx, dtx, job); err != nil {
-			jq.logger.Error("failed to reschedule job", "job_id", job.JobID, "error", err)
-			continue
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
-}
-
-func (jq *JobQueue[T]) rescheduleJob(ctx context.Context, q database.Querier, job database.GoqueueJob) error {
-	if job.RetryAttempt >= job.MaxRetries {
-		return nil
-	}
-
-	_, err := q.RescheduleJob(ctx, database.RescheduleJobParams{
-		JobID:        job.JobID,
-		RetryAttempt: job.RetryAttempt + 1,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to reschedule job with id %d: %w", job.JobID, err)
-	}
-
-	return nil
-}
-
 type jobQueueConfig struct {
-	logger                 *slog.Logger
-	reconciliationInterval time.Duration
-	pollInterval           time.Duration
-	baseRetryDelay         time.Duration
-	maxRetryDelay          time.Duration
+	logger         *slog.Logger
+	pollInterval   time.Duration
+	baseRetryDelay time.Duration
+	maxRetryDelay  time.Duration
 }
 
 type JobQueueOption func(*jobQueueConfig)
@@ -251,12 +197,6 @@ type JobQueueOption func(*jobQueueConfig)
 func WithLogger(logger *slog.Logger) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
 		jqc.logger = logger
-	}
-}
-
-func WithReconciliationInterval(interval time.Duration) JobQueueOption {
-	return func(jqc *jobQueueConfig) {
-		jqc.reconciliationInterval = interval
 	}
 }
 
