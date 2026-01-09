@@ -1,3 +1,9 @@
+CREATE TYPE goqueue_retry_policy AS ENUM (
+  'constant',
+  'linear',
+  'exponential'
+);
+
 CREATE TYPE goqueue_job_status AS ENUM (
   'available',
   'pending',
@@ -13,6 +19,7 @@ CREATE TABLE IF NOT EXISTS goqueue_jobs (
   next_retry_at TIMESTAMP,
   max_retries INTEGER NOT NULL DEFAULT 3,
   retry_attempt INTEGER NOT NULL DEFAULT 0,
+  retry_policy goqueue_retry_policy NOT NULL DEFAULT 'exponential',
   status goqueue_job_status NOT NULL,
   error TEXT,
   arguments JSONB NOT NULL

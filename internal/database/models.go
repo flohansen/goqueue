@@ -55,15 +55,59 @@ func (ns NullGoqueueJobStatus) Value() (driver.Value, error) {
 	return string(ns.GoqueueJobStatus), nil
 }
 
+type GoqueueRetryPolicy string
+
+const (
+	GoqueueRetryPolicyConstant    GoqueueRetryPolicy = "constant"
+	GoqueueRetryPolicyLinear      GoqueueRetryPolicy = "linear"
+	GoqueueRetryPolicyExponential GoqueueRetryPolicy = "exponential"
+)
+
+func (e *GoqueueRetryPolicy) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = GoqueueRetryPolicy(s)
+	case string:
+		*e = GoqueueRetryPolicy(s)
+	default:
+		return fmt.Errorf("unsupported scan type for GoqueueRetryPolicy: %T", src)
+	}
+	return nil
+}
+
+type NullGoqueueRetryPolicy struct {
+	GoqueueRetryPolicy GoqueueRetryPolicy `json:"goqueue_retry_policy"`
+	Valid              bool               `json:"valid"` // Valid is true if GoqueueRetryPolicy is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullGoqueueRetryPolicy) Scan(value interface{}) error {
+	if value == nil {
+		ns.GoqueueRetryPolicy, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.GoqueueRetryPolicy.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullGoqueueRetryPolicy) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.GoqueueRetryPolicy), nil
+}
+
 type GoqueueJob struct {
-	JobID        int32            `json:"job_id"`
-	CreatedAt    pgtype.Timestamp `json:"created_at"`
-	StartedAt    pgtype.Timestamp `json:"started_at"`
-	FinishedAt   pgtype.Timestamp `json:"finished_at"`
-	NextRetryAt  pgtype.Timestamp `json:"next_retry_at"`
-	MaxRetries   int32            `json:"max_retries"`
-	RetryAttempt int32            `json:"retry_attempt"`
-	Status       GoqueueJobStatus `json:"status"`
-	Error        pgtype.Text      `json:"error"`
-	Arguments    []byte           `json:"arguments"`
+	JobID        int32              `json:"job_id"`
+	CreatedAt    pgtype.Timestamp   `json:"created_at"`
+	StartedAt    pgtype.Timestamp   `json:"started_at"`
+	FinishedAt   pgtype.Timestamp   `json:"finished_at"`
+	NextRetryAt  pgtype.Timestamp   `json:"next_retry_at"`
+	MaxRetries   int32              `json:"max_retries"`
+	RetryAttempt int32              `json:"retry_attempt"`
+	RetryPolicy  GoqueueRetryPolicy `json:"retry_policy"`
+	Status       GoqueueJobStatus   `json:"status"`
+	Error        pgtype.Text        `json:"error"`
+	Arguments    []byte             `json:"arguments"`
 }
