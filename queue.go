@@ -15,10 +15,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// Worker processes jobs ob type T. Implementations should be idempotent as jobs
+// may be retried multiple times on failure.
 type Worker[T any] interface {
+	// Work processes a single job. Returning an error triggers retry logic
+	// based on the job's retry policy and max retry count. If max retries is
+	// exceeded, the job is marked as failed.
 	Work(ctx context.Context, job *Job[T]) error
 }
 
+// JobQueue manages the lifecycle of jobs in a named queue. It polls the
+// database for scheduled jobs, executes them via a Worker, and handles retries
+// with exponential backoff or other configured policies. Jobs are processed
+// concurrently.
+//
+// T is the type of the job arguments payload and must be JSON serializable.
+//
+// JobQueues should be created using the New function. Example:
+//
+//	queue := jobqueue.New(db, &MyWorker{},
+//	    jobqueue.WithQueueName("my-queue"),
+//	    jobqueue.WithPollInterval(500*time.Millisecond),
+//	)
 type JobQueue[T any] struct {
 	db             database.DBTX
 	q              database.Querier
@@ -30,6 +48,9 @@ type JobQueue[T any] struct {
 	maxRetryDelay  time.Duration
 }
 
+// New creates a new JobQueue with the given database connection and worker.
+// Configure behavior using functional options like WithPollInterval,
+// WithQueueName, etc.
 func New[T any](db database.DBTX, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 	cfg := &jobQueueConfig{
 		queueName:      "default",
@@ -54,11 +75,23 @@ func New[T any](db database.DBTX, worker Worker[T], opts ...JobQueueOption) *Job
 	}
 }
 
+// Job represents a queued job with its arguments and database ID.
 type Job[T any] struct {
-	ID   int32
+	// ID is the database identifier for the job.
+	ID int32
+
+	// Args contains the job payload of type T.
 	Args T
 }
 
+// Enqueue adds a new job with the given arguments to the queue. Optional
+// parameters can be set using EnqueueOption functions like WithMaxRetries
+// and WithRetryPolicy. It returns the created Job or an error. Example:
+//
+//	job, err := queue.Enqueue(ctx, MyJobArgs{...},
+//	    jobqueue.WithMaxRetries(5),
+//	    jobqueue.WithRetryPolicy(jobqueue.RetryPolicyExponential),
+//	)
 func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOption) (*Job[T], error) {
 	b, err := json.Marshal(args)
 	if err != nil {
@@ -90,6 +123,21 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 	}, nil
 }
 
+// Receive starts polling the queue for scheduled jobs and processes them using
+// the configured Worker. It runs until the provided context is cancelled.
+// Errors during job processing are logged but do not stop the polling loop. Failed
+// jobs are retried or marked as failed after the retry policy has been exhausted.
+//
+// Example:
+//
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//
+//	go queue.Receive(ctx)
+//
+//	// Run for 10 minutes
+//	time.Sleep(10 * time.Minute)
+//	cancel()
 func (jq *JobQueue[T]) Receive(ctx context.Context) {
 	for {
 		select {
@@ -108,6 +156,10 @@ func (jq *JobQueue[T]) Receive(ctx context.Context) {
 	}
 }
 
+// receive fetches and processes a single job from the queue. It returns an error
+// if job processing fails or if no job is available. This method is called by
+// the Receive loop. Errors are categorized for proper handling. Retry logic and
+// failure marking are handled here.
 func (jq *JobQueue[T]) receive(ctx context.Context) error {
 	job, err := jq.q.FetchJobLocked(ctx, jq.queueName)
 	if err != nil {
@@ -146,6 +198,9 @@ func (jq *JobQueue[T]) receive(ctx context.Context) error {
 	return nil
 }
 
+// retryJob reschedules the given job for a future time based on its retry
+// policy and the number of attempts already made. If rescheduling fails, an
+// error is logged.
 func (jq *JobQueue[T]) retryJob(ctx context.Context, job database.GoqueueJob) {
 	nextRetryDelay := jq.calcNextRetryDelay(job)
 	if _, err := jq.q.RescheduleJob(ctx, database.RescheduleJobParams{
@@ -156,6 +211,8 @@ func (jq *JobQueue[T]) retryJob(ctx context.Context, job database.GoqueueJob) {
 	}
 }
 
+// markJobFailed updates the job status to 'failed' with the provided error
+// message. If the update fails, an error is logged.
 func (jq *JobQueue[T]) markJobFailed(ctx context.Context, job database.GoqueueJob, err error) {
 	if _, err := jq.q.UpdateJobFailed(ctx, database.UpdateJobFailedParams{
 		JobID: job.JobID,
@@ -165,6 +222,8 @@ func (jq *JobQueue[T]) markJobFailed(ctx context.Context, job database.GoqueueJo
 	}
 }
 
+// calcNextRetryDelay calculates the delay before the next retry attempt
+// based on the job's retry policy and the number of attempts already made.
 func (jq *JobQueue[T]) calcNextRetryDelay(job database.GoqueueJob) time.Duration {
 	delay := jq.baseRetryDelay
 
@@ -183,6 +242,7 @@ func (jq *JobQueue[T]) calcNextRetryDelay(job database.GoqueueJob) time.Duration
 	return delay
 }
 
+// jobQueueConfig holds configuration options for JobQueue.
 type jobQueueConfig struct {
 	queueName      string
 	logger         *slog.Logger
@@ -191,51 +251,62 @@ type jobQueueConfig struct {
 	maxRetryDelay  time.Duration
 }
 
+// JobQueueOption defines a functional option for configuring a JobQueue.
 type JobQueueOption func(*jobQueueConfig)
 
+// WithLogger sets a custom logger for the JobQueue.
 func WithLogger(logger *slog.Logger) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
 		jqc.logger = logger
 	}
 }
 
+// WithPollInterval sets the polling interval for checking the queue for new jobs.
 func WithPollInterval(interval time.Duration) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
 		jqc.pollInterval = interval
 	}
 }
 
+// WithBaseRetryDelay sets the base delay used for calculating retry backoff.
 func WithBaseRetryDelay(d time.Duration) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
 		jqc.baseRetryDelay = d
 	}
 }
 
+// WithMaxRetryDelay sets the maximum delay allowed between retry attempts.
 func WithMaxRetryDelay(d time.Duration) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
 		jqc.maxRetryDelay = d
 	}
 }
 
+// WithQueueName sets the name of the job queue.
 func WithQueueName(name string) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
 		jqc.queueName = name
 	}
 }
 
+// enqueueConfig holds configuration options for enqueuing a job.
 type enqueueConfig struct {
 	maxRetries  int32
 	retryPolicy database.GoqueueRetryPolicy
 }
 
+// EnqueueOption defines a functional option for configuring job enqueuing.
 type EnqueueOption func(*enqueueConfig)
 
+// WithMaxRetries sets the maximum number of retries for the enqueued job.
 func WithMaxRetries(n int32) EnqueueOption {
 	return func(ec *enqueueConfig) {
 		ec.maxRetries = n
 	}
 }
 
+// WithRetryPolicy sets the retry policy for the enqueued job. Possible policies
+// are RetryPolicyConstant, RetryPolicyLinear, and RetryPolicyExponential.
 func WithRetryPolicy(policy RetryPolicy) EnqueueOption {
 	return func(ec *enqueueConfig) {
 		switch policy {
@@ -249,10 +320,25 @@ func WithRetryPolicy(policy RetryPolicy) EnqueueOption {
 	}
 }
 
+// RetryPolicy defines the strategy for retrying failed jobs.
 type RetryPolicy int
 
 const (
+	// RetryPolicyConstant retries jobs with a constant delay. Formlar:
+	//
+	//	next_delay = base_delay
+	//
 	RetryPolicyConstant RetryPolicy = iota
+
+	// RetryPolicyLinear retries jobs with a linearly increasing delay. Formula:
+	//
+	//	next_delay = base_delay * (attempt_number + 1)
+	//
 	RetryPolicyLinear
+
+	// RetryPolicyExponential retries jobs with an exponentially increasing delay. Formula:
+	//
+	//	next_delay = base_delay ^ (attempt_number + 1)
+	//
 	RetryPolicyExponential
 )

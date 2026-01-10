@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
+// MigrateUp applies all up migrations to the database connected via the given pgxpool.Pool.
 func MigrateUp(pool *pgxpool.Pool) error {
 	sourceDriver, err := iofs.New(sql.MigrationsFS, "migrations")
 	if err != nil {
