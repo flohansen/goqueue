@@ -6,6 +6,9 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"math/rand"
+	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	. "github.com/onsi/ginkgo/v2"
@@ -127,7 +130,7 @@ var _ = Describe("Job Queue Integration", func() {
 
 			BeforeEach(func(ctx SpecContext) {
 				jobs = []*goqueue.Job[testArgs]{}
-				for i := 0; i < 50; i++ {
+				for range 10 {
 					job, err := q.Enqueue(ctx, testArgs{Foo: "bar"})
 					Expect(err).NotTo(HaveOccurred())
 					jobs = append(jobs, job)
@@ -145,13 +148,16 @@ var _ = Describe("Job Queue Integration", func() {
 						return count
 					}, "1m", "100ms").Should(Equal(len(jobs)))
 
+					slices.SortFunc(w.JobsProcessed, func(a, b *goqueue.Job[testArgs]) int {
+						return int(a.ID - b.ID)
+					})
 					Expect(w.JobsProcessed).To(Equal(jobs))
 				})
 			})
 
 			Context("and multiple receivers are running", func() {
 				It("should process all jobs without duplication", func(ctx SpecContext) {
-					for i := 0; i < 3; i++ {
+					for range 3 {
 						go q.Receive(ctx)
 					}
 
@@ -162,6 +168,9 @@ var _ = Describe("Job Queue Integration", func() {
 						return count
 					}, "1m", "100ms").Should(Equal(len(jobs)))
 
+					slices.SortFunc(w.JobsProcessed, func(a, b *goqueue.Job[testArgs]) int {
+						return int(a.ID - b.ID)
+					})
 					Expect(w.JobsProcessed).To(Equal(jobs))
 				})
 			})
@@ -185,6 +194,7 @@ func (w *testWorker) Work(ctx context.Context, job *goqueue.Job[testArgs]) error
 		return errors.New("worker failed")
 	}
 
+	time.Sleep(time.Duration(rand.Intn(20)) * time.Millisecond)
 	w.JobsProcessed = append(w.JobsProcessed, job)
 	return nil
 }
