@@ -177,6 +177,7 @@ func (jq *JobQueue[T]) receive(ctx context.Context) error {
 	}
 
 	if err := jq.worker.Work(ctx, &Job[T]{
+		ID:   job.JobID,
 		Args: args,
 	}); err != nil {
 		if job.RetryAttempt < job.MaxRetries {

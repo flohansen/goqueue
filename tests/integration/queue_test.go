@@ -3,7 +3,9 @@
 package integration
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	. "github.com/onsi/ginkgo/v2"
@@ -17,16 +19,20 @@ import (
 
 var _ = Describe("Job Queue Integration", func() {
 	var (
-		q *goqueue.JobQueue[testArgs]
-		w *testWorker
+		logBuf bytes.Buffer
+		q      *goqueue.JobQueue[testArgs]
+		w      *testWorker
 	)
 
 	BeforeEach(func(ctx SpecContext) {
 		_, err := dbPool.Exec(ctx, "TRUNCATE goqueue_jobs")
 		Expect(err).NotTo(HaveOccurred())
 
+		logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		logBuf.Reset()
+
 		w = &testWorker{}
-		q = goqueue.New(dbPool, w)
+		q = goqueue.New(dbPool, w, goqueue.WithLogger(logger))
 	})
 
 	Describe("Enqueuing and processing jobs", func() {
@@ -48,6 +54,8 @@ var _ = Describe("Job Queue Integration", func() {
 					Expect(row.Scan(&status)).To(Succeed())
 					return status
 				}, "1m", "100ms").Should(Equal("finished"))
+
+				Expect(w.JobsProcessed).To(Equal([]*goqueue.Job[testArgs]{job}))
 			})
 
 			It("should be marked as failed", func(ctx SpecContext) {
@@ -91,6 +99,8 @@ var _ = Describe("Job Queue Integration", func() {
 					)).To(Succeed())
 					return job
 				}, "1m", "100ms").Should(Equal(database.GoqueueJob{Status: "finished", MaxRetries: 3, RetryAttempt: 2}))
+
+				Expect(w.JobsProcessed).To(Equal([]*goqueue.Job[testArgs]{job}))
 			})
 
 			It("should stay failed after maximum number of retries", func(ctx SpecContext) {
@@ -111,6 +121,51 @@ var _ = Describe("Job Queue Integration", func() {
 				}, "1m", "100ms").Should(Equal(database.GoqueueJob{Status: "failed", MaxRetries: 3, RetryAttempt: 3, Error: pgtype.Text{String: "maximum number of retries reached", Valid: true}}))
 			})
 		})
+
+		Context("when multiple jobs are enqueued", func() {
+			var jobs []*goqueue.Job[testArgs]
+
+			BeforeEach(func(ctx SpecContext) {
+				jobs = []*goqueue.Job[testArgs]{}
+				for i := 0; i < 50; i++ {
+					job, err := q.Enqueue(ctx, testArgs{Foo: "bar"})
+					Expect(err).NotTo(HaveOccurred())
+					jobs = append(jobs, job)
+				}
+			})
+
+			Context("and one receiver is running", func() {
+				It("should process all jobs", func(ctx SpecContext) {
+					go q.Receive(ctx)
+
+					Eventually(func() int {
+						row := dbPool.QueryRow(ctx, "SELECT COUNT(*) FROM goqueue_jobs WHERE status = 'finished'")
+						var count int
+						Expect(row.Scan(&count)).To(Succeed())
+						return count
+					}, "1m", "100ms").Should(Equal(len(jobs)))
+
+					Expect(w.JobsProcessed).To(Equal(jobs))
+				})
+			})
+
+			Context("and multiple receivers are running", func() {
+				It("should process all jobs without duplication", func(ctx SpecContext) {
+					for i := 0; i < 3; i++ {
+						go q.Receive(ctx)
+					}
+
+					Eventually(func() int {
+						row := dbPool.QueryRow(ctx, "SELECT COUNT(*) FROM goqueue_jobs WHERE status = 'finished'")
+						var count int
+						Expect(row.Scan(&count)).To(Succeed())
+						return count
+					}, "1m", "100ms").Should(Equal(len(jobs)))
+
+					Expect(w.JobsProcessed).To(Equal(jobs))
+				})
+			})
+		})
 	})
 })
 
@@ -121,7 +176,8 @@ type testArgs struct {
 type testWorker struct {
 	goqueue.Worker[testArgs]
 
-	ShouldFail bool
+	ShouldFail    bool
+	JobsProcessed []*goqueue.Job[testArgs]
 }
 
 func (w *testWorker) Work(ctx context.Context, job *goqueue.Job[testArgs]) error {
@@ -129,5 +185,6 @@ func (w *testWorker) Work(ctx context.Context, job *goqueue.Job[testArgs]) error
 		return errors.New("worker failed")
 	}
 
+	w.JobsProcessed = append(w.JobsProcessed, job)
 	return nil
 }
