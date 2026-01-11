@@ -12,6 +12,8 @@ goqueue is a simple and efficient queue implementation in Go.
 ## Features
 - Concurrent processing through worker jobs
 - Retry mechanism with customizable retry logic
+- PostgreSQL backend for reliable job storage
+- Structured logging support with slog
 
 ## Usage
 First, define your job arguments and worker by implementing the `goqueue.Worker` interface:
