@@ -20,6 +20,57 @@ import (
 	"github.com/flohansen/goqueue/internal/database"
 )
 
+var _ = Describe("FIFO Queue Integration", func() {
+	var (
+		logBuf bytes.Buffer
+		q      *goqueue.JobQueue[testArgs]
+		w      *testWorker
+	)
+
+	BeforeEach(func(ctx SpecContext) {
+		_, err := dbPool.Exec(ctx, "TRUNCATE goqueue_jobs")
+		Expect(err).NotTo(HaveOccurred())
+
+		logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		logBuf.Reset()
+
+		w = &testWorker{}
+		q = goqueue.New(dbPool, w,
+			goqueue.WithFIFO(true),
+			goqueue.WithLogger(logger))
+	})
+
+	Describe("Enqueuing and processing jobs", func() {
+		Context("when multiple jobs are enqueued", func() {
+			var jobs []*goqueue.Job[testArgs]
+
+			BeforeEach(func(ctx SpecContext) {
+				jobs = []*goqueue.Job[testArgs]{}
+				for range 10 {
+					job, err := q.Enqueue(ctx, testArgs{Foo: "bar"})
+					Expect(err).NotTo(HaveOccurred())
+					jobs = append(jobs, job)
+				}
+			})
+
+			It("should be processed and marked as finished", func(ctx SpecContext) {
+				for range 3 {
+					go q.Receive(ctx)
+				}
+
+				Eventually(func() int {
+					row := dbPool.QueryRow(ctx, "SELECT COUNT(*) FROM goqueue_jobs WHERE status = 'finished'")
+					var count int
+					Expect(row.Scan(&count)).To(Succeed())
+					return count
+				}, "1m", "100ms").Should(Equal(len(jobs)))
+
+				Expect(w.JobsProcessed).To(Equal(jobs))
+			})
+		})
+	})
+})
+
 var _ = Describe("Job Queue Integration", func() {
 	var (
 		logBuf bytes.Buffer
