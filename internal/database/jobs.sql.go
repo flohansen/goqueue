@@ -11,6 +11,44 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const fetchJob = `-- name: FetchJob :one
+UPDATE goqueue_jobs AS j
+SET
+    status = 'running',
+    retry_attempt = j.retry_attempt + 1,
+    started_at = NOW()
+WHERE job_id = (
+    SELECT job_id
+    FROM goqueue_jobs AS j2
+    WHERE j2.queue_name = $1
+      AND j2.status = 'available'
+      AND j2.scheduled_at <= NOW()
+    ORDER BY j2.created_at
+    LIMIT 1
+)
+RETURNING j.job_id, j.queue_name, j.created_at, j.started_at, j.finished_at, j.scheduled_at, j.max_retries, j.retry_attempt, j.retry_policy, j.status, j.error, j.arguments
+`
+
+func (q *Queries) FetchJob(ctx context.Context, queueName string) (GoqueueJob, error) {
+	row := q.db.QueryRow(ctx, fetchJob, queueName)
+	var i GoqueueJob
+	err := row.Scan(
+		&i.JobID,
+		&i.QueueName,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.ScheduledAt,
+		&i.MaxRetries,
+		&i.RetryAttempt,
+		&i.RetryPolicy,
+		&i.Status,
+		&i.Error,
+		&i.Arguments,
+	)
+	return i, err
+}
+
 const fetchJobLocked = `-- name: FetchJobLocked :one
 UPDATE goqueue_jobs AS j
 SET
