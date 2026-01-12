@@ -30,6 +30,8 @@ var _ = Describe("FIFO Queue Integration", func() {
 	BeforeEach(func(ctx SpecContext) {
 		_, err := dbPool.Exec(ctx, "TRUNCATE goqueue_jobs")
 		Expect(err).NotTo(HaveOccurred())
+		_, err = dbPool.Exec(ctx, "TRUNCATE goqueue_queues")
+		Expect(err).NotTo(HaveOccurred())
 
 		logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 		logBuf.Reset()
@@ -80,6 +82,8 @@ var _ = Describe("Job Queue Integration", func() {
 
 	BeforeEach(func(ctx SpecContext) {
 		_, err := dbPool.Exec(ctx, "TRUNCATE goqueue_jobs")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbPool.Exec(ctx, "TRUNCATE goqueue_queues")
 		Expect(err).NotTo(HaveOccurred())
 
 		logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))

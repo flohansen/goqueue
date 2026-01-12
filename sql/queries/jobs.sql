@@ -35,6 +35,23 @@ SET
 WHERE job_id = $1
 RETURNING *;
 
+-- name: FetchJob :one
+UPDATE goqueue_jobs AS j
+SET
+    status = 'running',
+    retry_attempt = j.retry_attempt + 1,
+    started_at = NOW()
+WHERE job_id = (
+    SELECT job_id
+    FROM goqueue_jobs AS j2
+    WHERE j2.queue_name = $1
+      AND j2.status = 'available'
+      AND j2.scheduled_at <= NOW()
+    ORDER BY j2.created_at
+    LIMIT 1
+)
+RETURNING j.*;
+
 -- name: FetchJobLocked :one
 UPDATE goqueue_jobs AS j
 SET

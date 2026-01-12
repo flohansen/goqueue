@@ -112,3 +112,9 @@ type GoqueueJob struct {
 	Error        pgtype.Text        `json:"error"`
 	Arguments    []byte             `json:"arguments"`
 }
+
+type GoqueueQueue struct {
+	QueueName string           `json:"queue_name"`
+	IsFifo    bool             `json:"is_fifo"`
+	CreatedAt pgtype.Timestamp `json:"created_at"`
+}

@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS goqueue_queues (
+    queue_name TEXT PRIMARY KEY,
+    is_fifo BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
