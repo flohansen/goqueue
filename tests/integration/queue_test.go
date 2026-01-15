@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -55,6 +56,22 @@ var _ = Describe("FIFO Queue Integration", func() {
 				}
 			})
 
+			It("should use index", func(ctx SpecContext) {
+				for range 3 {
+					go q.Receive(ctx)
+				}
+
+				Eventually(func() int {
+					row := dbPool.QueryRow(ctx, "SELECT COUNT(*) FROM goqueue_jobs WHERE status = 'finished'")
+					var count int
+					Expect(row.Scan(&count)).To(Succeed())
+					return count
+				}, "1m", "100ms").Should(BeNumerically(">", 0))
+
+				scans := getIndexScans(dbPool, "idx_goqueue_jobs_fetch")
+				Expect(scans).To(BeNumerically(">", 0), "Index should have been used during job fetching/processing")
+			})
+
 			It("should be processed and marked as finished", func(ctx SpecContext) {
 				for range 3 {
 					go q.Receive(ctx)
@@ -69,6 +86,7 @@ var _ = Describe("FIFO Queue Integration", func() {
 
 				Expect(w.JobsProcessed).To(Equal(jobs))
 			})
+
 		})
 	})
 })
@@ -252,4 +270,23 @@ func (w *testWorker) Work(ctx context.Context, job *goqueue.Job[testArgs]) error
 	time.Sleep(time.Duration(rand.Intn(20)) * time.Millisecond)
 	w.JobsProcessed = append(w.JobsProcessed, job)
 	return nil
+}
+
+func getIndexScans(dbPool *pgxpool.Pool, name string) int64 {
+	ctx := context.Background()
+
+	query := `
+	SELECT COALESCE(idx_scan, 0)
+	FROM pg_stat_user_indexes
+	WHERE indexrelname = $1
+	`
+
+	var scans int64
+	err := dbPool.QueryRow(ctx, query, name).Scan(&scans)
+	if err != nil {
+		GinkgoWriter.Printf("%v\n", err)
+		return 0
+	}
+
+	return scans
 }
