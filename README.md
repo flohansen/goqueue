@@ -23,6 +23,7 @@ A simple, efficient, and reliable queue implementation for Go with PostgreSQL ba
 - **Concurrent Processing**: Efficient worker-based job processing
 - **FIFO Queues**: First-In-First-Out job queues for strict ordering requirements
 - **Retry Mechanism**: Customizable retry logic for failed jobs
+- **Dead Letter Queue**: Automatic handling of permanently failed jobs for later analysis
 - **PostgreSQL Backend**: Reliable, persistent job storage
 - **Structured Logging**: Built-in support for Go's `slog` package
 
@@ -109,6 +110,24 @@ SQL query files are stored in `sql/queries/`. Go bindings are automatically gene
 ```bash
 make generate
 ```
+
+## Dead Letter Queue
+
+The dead letter queue (DLQ) feature provides a robust way to handle jobs that fail after exhausting all retry attempts. Jobs that cannot be successfully processed are automatically moved to a dead letter queue for later analysis and debugging.
+
+### How It Works
+
+1. When a job fails, it enters the retry mechanism based on your configured retry policy
+2. After the maximum number of retries is reached, the job is moved to the dead letter queue
+3. Jobs in the DLQ can be queried, analyzed, and reprocessed if needed
+4. This prevents failed jobs from being lost and allows for post-mortem analysis
+
+### Benefits
+
+- **Observability**: Track jobs that fail unexpectedly
+- **Debugging**: Analyze failed jobs to identify issues in your processing logic
+- **Recovery**: Reprocess failed jobs once underlying issues are resolved
+- **Data Integrity**: Ensure no job is silently dropped due to failures
 
 ## Using Nix (Optional)
 
