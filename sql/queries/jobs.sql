@@ -77,3 +77,13 @@ SET
     scheduled_at = $1
 WHERE job_id = $2
 RETURNING *;
+
+-- name: MoveJobToDLQ :one
+UPDATE goqueue_jobs
+SET
+    queue_name = $1,
+    status = 'available',
+    retry_attempt = 0,
+    scheduled_at = NOW()
+WHERE job_id = $2
+RETURNING *;

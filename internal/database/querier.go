@@ -15,6 +15,7 @@ type Querier interface {
 	InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJob, error)
 	InsertQueue(ctx context.Context, arg InsertQueueParams) (GoqueueQueue, error)
 	LockQueue(ctx context.Context, hashtext string) (bool, error)
+	MoveJobToDLQ(ctx context.Context, arg MoveJobToDLQParams) (GoqueueJob, error)
 	RescheduleJob(ctx context.Context, arg RescheduleJobParams) (GoqueueJob, error)
 	UpdateJob(ctx context.Context, arg UpdateJobParams) (GoqueueJob, error)
 	UpdateJobFailed(ctx context.Context, arg UpdateJobFailedParams) (GoqueueJob, error)

@@ -128,6 +128,42 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJo
 	return i, err
 }
 
+const moveJobToDLQ = `-- name: MoveJobToDLQ :one
+UPDATE goqueue_jobs
+SET
+    queue_name = $1,
+    status = 'available',
+    retry_attempt = 0,
+    scheduled_at = NOW()
+WHERE job_id = $2
+RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+`
+
+type MoveJobToDLQParams struct {
+	QueueName string `json:"queue_name"`
+	JobID     int32  `json:"job_id"`
+}
+
+func (q *Queries) MoveJobToDLQ(ctx context.Context, arg MoveJobToDLQParams) (GoqueueJob, error) {
+	row := q.db.QueryRow(ctx, moveJobToDLQ, arg.QueueName, arg.JobID)
+	var i GoqueueJob
+	err := row.Scan(
+		&i.JobID,
+		&i.QueueName,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.ScheduledAt,
+		&i.MaxRetries,
+		&i.RetryAttempt,
+		&i.RetryPolicy,
+		&i.Status,
+		&i.Error,
+		&i.Arguments,
+	)
+	return i, err
+}
+
 const rescheduleJob = `-- name: RescheduleJob :one
 UPDATE goqueue_jobs
 SET

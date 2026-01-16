@@ -56,6 +56,7 @@ type JobQueue[T any] struct {
 	q              Querier
 	worker         Worker[T]
 	queueName      string
+	dlqName        *string
 	logger         *slog.Logger
 	pollInterval   time.Duration
 	baseRetryDelay time.Duration
@@ -89,6 +90,7 @@ func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 		q:              queries,
 		worker:         worker,
 		queueName:      cfg.queueName,
+		dlqName:        cfg.dlqName,
 		logger:         cfg.logger,
 		pollInterval:   cfg.pollInterval,
 		baseRetryDelay: cfg.baseRetryDelay,
@@ -330,13 +332,24 @@ func (jq *JobQueue[T]) retryJob(ctx context.Context, q database.Querier, job dat
 }
 
 // markJobFailed updates the job status to 'failed' with the provided error
-// message. If the update fails, an error is logged.
+// message. If the update fails, an error is logged. If a dead-letter queue
+// (DLQ) is configured, the job is also inserted into the DLQ for further
+// inspection.
 func (jq *JobQueue[T]) markJobFailed(ctx context.Context, q database.Querier, job database.GoqueueJob, err error) {
 	if _, err := q.UpdateJobFailed(ctx, database.UpdateJobFailedParams{
 		JobID: job.JobID,
 		Error: pgtype.Text{String: err.Error(), Valid: true},
 	}); err != nil {
 		jq.logger.Error("failed to update job status to 'failed'", "job_id", job.JobID, "error", err)
+	}
+
+	if jq.dlqName != nil {
+		if _, err := q.MoveJobToDLQ(ctx, database.MoveJobToDLQParams{
+			JobID:     job.JobID,
+			QueueName: *jq.dlqName,
+		}); err != nil {
+			jq.logger.Error("failed to insert job into DLQ", "job_id", job.JobID, "dlq_name", *jq.dlqName, "error", err)
+		}
 	}
 }
 
@@ -363,6 +376,7 @@ func (jq *JobQueue[T]) calcNextRetryDelay(job database.GoqueueJob) time.Duration
 // jobQueueConfig holds configuration options for JobQueue.
 type jobQueueConfig struct {
 	queueName      string
+	dlqName        *string
 	logger         *slog.Logger
 	pollInterval   time.Duration
 	baseRetryDelay time.Duration
@@ -412,6 +426,18 @@ func WithQueueName(name string) JobQueueOption {
 func WithFIFO(isFIFO bool) JobQueueOption {
 	return func(jqc *jobQueueConfig) {
 		jqc.isFIFO = isFIFO
+	}
+}
+
+// WithDLQ configures a dead-letter queue (DLQ) for handling failed jobs. If
+// queueName is an empty string, no DLQ is used.
+func WithDLQ(queueName string) JobQueueOption {
+	return func(jqc *jobQueueConfig) {
+		if queueName == "" {
+			jqc.dlqName = nil
+		} else {
+			jqc.dlqName = &queueName
+		}
 	}
 }
 
