@@ -39,6 +39,8 @@ var _ = Describe("FIFO Queue Integration", func() {
 
 		w = &testWorker{}
 		q = goqueue.New(dbPool, w,
+			goqueue.WithBaseRetryDelay(100*time.Millisecond),
+			goqueue.WithMaxRetryDelay(10*time.Second),
 			goqueue.WithFIFO(true),
 			goqueue.WithLogger(logger))
 	})
@@ -108,7 +110,10 @@ var _ = Describe("Job Queue Integration", func() {
 		logBuf.Reset()
 
 		w = &testWorker{}
-		q = goqueue.New(dbPool, w, goqueue.WithLogger(logger))
+		q = goqueue.New(dbPool, w,
+			goqueue.WithBaseRetryDelay(100*time.Millisecond),
+			goqueue.WithMaxRetryDelay(10*time.Second),
+			goqueue.WithLogger(logger))
 	})
 
 	Describe("Enqueuing and processing jobs", func() {
@@ -245,6 +250,77 @@ var _ = Describe("Job Queue Integration", func() {
 						return int(a.ID - b.ID)
 					})
 					Expect(w.JobsProcessed).To(Equal(jobs))
+				})
+			})
+		})
+	})
+})
+
+var _ = Describe("DLQ Integration", func() {
+	var (
+		logBuf bytes.Buffer
+		q      *goqueue.JobQueue[testArgs]
+		dlq    *goqueue.JobQueue[testArgs]
+		w      *testWorker
+	)
+
+	BeforeEach(func(ctx SpecContext) {
+		_, err := dbPool.Exec(ctx, "TRUNCATE goqueue_jobs")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbPool.Exec(ctx, "TRUNCATE goqueue_queues")
+		Expect(err).NotTo(HaveOccurred())
+
+		logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		logBuf.Reset()
+
+		w = &testWorker{}
+		q = goqueue.New(dbPool, w,
+			goqueue.WithQueueName("orders"),
+			goqueue.WithDLQ("orders-dlq"),
+			goqueue.WithBaseRetryDelay(100*time.Millisecond),
+			goqueue.WithMaxRetryDelay(10*time.Second),
+			goqueue.WithLogger(logger))
+
+		dlqWorker := &testWorker{}
+		dlq = goqueue.New(dbPool, dlqWorker,
+			goqueue.WithQueueName("orders-dlq"),
+			goqueue.WithBaseRetryDelay(100*time.Millisecond),
+			goqueue.WithMaxRetryDelay(10*time.Second),
+			goqueue.WithLogger(logger))
+	})
+
+	Describe("Enqueuing failing jobs", func() {
+		Context("when a job is enqueued", func() {
+			var job *goqueue.Job[testArgs]
+
+			BeforeEach(func(ctx SpecContext) {
+				var err error
+				job, err = q.Enqueue(ctx, testArgs{Foo: "bar"})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			Context("and processing fails maximum number of times", func() {
+				It("should be moved to and processable by the dead letter queue", func(ctx SpecContext) {
+					w.ShouldFail = true
+					defer func() { w.ShouldFail = false }()
+
+					go q.Receive(ctx)
+
+					Eventually(func() string {
+						row := dbPool.QueryRow(ctx, "SELECT queue_name FROM goqueue_jobs WHERE job_id = $1", job.ID)
+						var queueName string
+						Expect(row.Scan(&queueName)).To(Succeed())
+						return queueName
+					}, "1m", "100ms").To(Equal("orders-dlq"))
+
+					go dlq.Receive(ctx)
+
+					Eventually(func() string {
+						row := dbPool.QueryRow(ctx, "SELECT status FROM goqueue_jobs WHERE job_id = $1", job.ID)
+						var status string
+						Expect(row.Scan(&status)).To(Succeed())
+						return status
+					}, "1m", "100ms").To(Equal("finished"))
 				})
 			})
 		})
