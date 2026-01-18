@@ -66,9 +66,9 @@ type JobProcessContext struct {
 //
 // JobQueues should be created using the New function. Example:
 //
-//	queue := jobqueue.New(db, &MyWorker{},
-//	    jobqueue.WithQueueName("my-queue"),
-//	    jobqueue.WithPollInterval(500*time.Millisecond),
+//	queue := goqueue.New(db, &MyWorker{},
+//	    goqueue.WithQueueName("my-queue"),
+//	    goqueue.WithPollInterval(500*time.Millisecond),
 //	)
 type JobQueue[T any] struct {
 	db             DB
