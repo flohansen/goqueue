@@ -24,6 +24,8 @@ type DB interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }
 
+// Querier combines the generated database queries with the ability to create
+// a new Querier bound to a transaction.
 type Querier interface {
 	database.Querier
 	WithTx(tx pgx.Tx) *database.Queries
@@ -36,6 +38,21 @@ type Worker[T any] interface {
 	// based on the job's retry policy and max retry count. If max retries is
 	// exceeded, the job is marked as failed.
 	Work(ctx context.Context, job *Job[T]) error
+}
+
+// JobEnqueueContext provides context for enqueuing a job, including its
+// arguments.
+type JobEnqueueContext struct {
+	context.Context
+	Args any
+}
+
+// JobProcessContext provides context for processing a job, including its ID
+// and arguments.
+type JobProcessContext struct {
+	context.Context
+	JobID int32
+	Args  any
 }
 
 // JobQueue manages the lifecycle of jobs in a named queue. It polls the
@@ -55,6 +72,7 @@ type JobQueue[T any] struct {
 	db             DB
 	q              Querier
 	worker         Worker[T]
+	middlewares    []Middleware
 	queueName      string
 	dlqName        *string
 	logger         *slog.Logger
@@ -89,6 +107,7 @@ func New[T any](db DB, worker Worker[T], opts ...JobQueueOption) *JobQueue[T] {
 		db:             db,
 		q:              queries,
 		worker:         worker,
+		middlewares:    cfg.middlewares,
 		queueName:      cfg.queueName,
 		dlqName:        cfg.dlqName,
 		logger:         cfg.logger,
@@ -142,11 +161,6 @@ type Job[T any] struct {
 //	    jobqueue.WithRetryPolicy(jobqueue.RetryPolicyExponential),
 //	)
 func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOption) (*Job[T], error) {
-	b, err := json.Marshal(args)
-	if err != nil {
-		return nil, fmt.Errorf("failed to json encode job arguments: %w", err)
-	}
-
 	cfg := &enqueueConfig{
 		maxRetries:  3,
 		retryPolicy: database.GoqueueRetryPolicyExponential,
@@ -155,21 +169,58 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 		opt(cfg)
 	}
 
-	job, err := jq.q.InsertJob(ctx, database.InsertJobParams{
-		QueueName:   jq.queueName,
-		Arguments:   b,
-		MaxRetries:  cfg.maxRetries,
-		RetryPolicy: cfg.retryPolicy,
-		ScheduledAt: pgtype.Timestamp{Time: time.Now().UTC(), Valid: true},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to insert job: %w", err)
+	enqueueCtx := JobEnqueueContext{
+		Context: ctx,
+		Args:    args,
+	}
+
+	var dbJob database.GoqueueJob
+	if err := jq.applyEnqueueMiddlewares(enqueueCtx, func(ctx JobEnqueueContext) error {
+		b, err := json.Marshal(args)
+		if err != nil {
+			return fmt.Errorf("failed to json encode job arguments: %w", err)
+		}
+
+		dbJob, err = jq.q.InsertJob(ctx, database.InsertJobParams{
+			QueueName:   jq.queueName,
+			Arguments:   b,
+			MaxRetries:  cfg.maxRetries,
+			RetryPolicy: cfg.retryPolicy,
+			ScheduledAt: pgtype.Timestamp{Time: time.Now().UTC(), Valid: true},
+		})
+		if err != nil {
+			return fmt.Errorf("failed to insert job: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return &Job[T]{
-		ID:   job.JobID,
+		ID:   dbJob.JobID,
 		Args: args,
 	}, nil
+}
+
+// applyEnqueueMiddlewares applies the configured enqueue middlewares in order
+// to the given EnqueueHandler.
+func (jq *JobQueue[T]) applyEnqueueMiddlewares(ctx JobEnqueueContext, next EnqueueHandler) error {
+	for i := len(jq.middlewares) - 1; i >= 0; i-- {
+		next = jq.middlewares[i].Enqueue(next)
+	}
+
+	return next(ctx)
+}
+
+// applyProcessMiddlewares applies the configured process middlewares in order
+// to the given ProcessHandler.
+func (jq *JobQueue[T]) applyProcessMiddlewares(ctx JobProcessContext, next ProcessHandler) error {
+	for i := len(jq.middlewares) - 1; i >= 0; i-- {
+		next = jq.middlewares[i].Process(next)
+	}
+
+	return next(ctx)
 }
 
 // Receive starts polling the queue for scheduled jobs and processes them using
@@ -218,7 +269,7 @@ func (jq *JobQueue[T]) Receive(ctx context.Context) {
 // categorized for proper handling. Retry logic and failure marking are handled
 // here.
 func (jq *JobQueue[T]) receiveConrurrent(ctx context.Context) error {
-	job, err := jq.q.FetchJobLocked(ctx, jq.queueName)
+	dbJob, err := jq.q.FetchJobLocked(ctx, jq.queueName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &internalerrs.NoJobError{}
@@ -227,27 +278,18 @@ func (jq *JobQueue[T]) receiveConrurrent(ctx context.Context) error {
 		return &internalerrs.ReceiveJobError{Err: err}
 	}
 
-	var args T
-	if err := json.Unmarshal(job.Arguments, &args); err != nil {
-		jq.markJobFailed(ctx, jq.q, job, err)
-		return &internalerrs.ReceiveJobError{Err: err}
+	args, err := jq.parseJobArgs(ctx, jq.q, dbJob)
+	if err != nil {
+		return err
 	}
 
-	if err := jq.worker.Work(ctx, &Job[T]{
-		ID:   job.JobID,
-		Args: args,
-	}); err != nil {
-		if job.RetryAttempt < job.MaxRetries {
-			jq.retryJob(ctx, jq.q, job)
-		} else {
-			jq.markJobFailed(ctx, jq.q, job, errors.New("maximum number of retries reached"))
-		}
-		return &internalerrs.WorkerFailedError{Err: err}
+	if err := jq.processJobWithRetry(ctx, dbJob, args); err != nil {
+		return err
 	}
 
-	if _, err := jq.q.UpdateJobFinished(ctx, job.JobID); err != nil {
+	if _, err := jq.q.UpdateJobFinished(ctx, dbJob.JobID); err != nil {
 		return &internalerrs.UpdateJobStatusError{
-			CurrentState: string(job.Status),
+			CurrentState: string(dbJob.Status),
 			WantedState:  string(database.GoqueueJobStatusFinished),
 			Err:          err,
 		}
@@ -266,46 +308,25 @@ func (jq *JobQueue[T]) receiveFIFO(ctx context.Context) error {
 		return fmt.Errorf("tx begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
-
 	dbtx := jq.q.WithTx(tx)
-	acquired, err := dbtx.LockQueue(ctx, jq.queueName)
+
+	dbJob, err := jq.fetchLockedJob(ctx, dbtx)
 	if err != nil {
-		return &internalerrs.ReceiveJobError{Err: fmt.Errorf("lock queue: %w", err)}
-	}
-	if !acquired {
-		return &internalerrs.NoJobError{}
+		return err
 	}
 
-	job, err := dbtx.FetchJob(ctx, jq.queueName)
+	args, err := jq.parseJobArgs(ctx, dbtx, dbJob)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return &internalerrs.NoJobError{}
-		}
-
-		return &internalerrs.ReceiveJobError{Err: err}
+		return err
 	}
 
-	var args T
-	if err := json.Unmarshal(job.Arguments, &args); err != nil {
-		jq.markJobFailed(ctx, dbtx, job, err)
-		return &internalerrs.ReceiveJobError{Err: err}
+	if err := jq.processJobWithRetry(ctx, dbJob, args); err != nil {
+		return err
 	}
 
-	if err := jq.worker.Work(ctx, &Job[T]{
-		ID:   job.JobID,
-		Args: args,
-	}); err != nil {
-		if job.RetryAttempt < job.MaxRetries {
-			jq.retryJob(ctx, dbtx, job)
-		} else {
-			jq.markJobFailed(ctx, dbtx, job, errors.New("maximum number of retries reached"))
-		}
-		return &internalerrs.WorkerFailedError{Err: err}
-	}
-
-	if _, err := dbtx.UpdateJobFinished(ctx, job.JobID); err != nil {
+	if _, err := dbtx.UpdateJobFinished(ctx, dbJob.JobID); err != nil {
 		return &internalerrs.UpdateJobStatusError{
-			CurrentState: string(job.Status),
+			CurrentState: string(dbJob.Status),
 			WantedState:  string(database.GoqueueJobStatusFinished),
 			Err:          err,
 		}
@@ -313,6 +334,66 @@ func (jq *JobQueue[T]) receiveFIFO(ctx context.Context) error {
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("tx commit: %w", err)
+	}
+
+	return nil
+}
+
+// fetchLockedJob acquires a lock on the queue and fetches the next job.
+func (jq *JobQueue[T]) fetchLockedJob(ctx context.Context, dbtx database.Querier) (database.GoqueueJob, error) {
+	acquired, err := dbtx.LockQueue(ctx, jq.queueName)
+	if err != nil {
+		return database.GoqueueJob{}, &internalerrs.ReceiveJobError{Err: fmt.Errorf("lock queue: %w", err)}
+	}
+	if !acquired {
+		return database.GoqueueJob{}, &internalerrs.NoJobError{}
+	}
+
+	dbJob, err := dbtx.FetchJob(ctx, jq.queueName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return database.GoqueueJob{}, &internalerrs.NoJobError{}
+		}
+		return database.GoqueueJob{}, &internalerrs.ReceiveJobError{Err: err}
+	}
+
+	return dbJob, nil
+}
+
+// parseJobArgs unmarshals the job arguments from JSON.
+func (jq *JobQueue[T]) parseJobArgs(ctx context.Context, dbtx database.Querier, dbJob database.GoqueueJob) (T, error) {
+	var args T
+	if err := json.Unmarshal(dbJob.Arguments, &args); err != nil {
+		jq.markJobFailed(ctx, dbtx, dbJob, err)
+		var zero T
+		return zero, &internalerrs.ReceiveJobError{Err: err}
+	}
+	return args, nil
+}
+
+// processJobWithRetry executes the job with retry logic on failure.
+func (jq *JobQueue[T]) processJobWithRetry(ctx context.Context, dbJob database.GoqueueJob, args T) error {
+	processContext := JobProcessContext{
+		Context: ctx,
+		JobID:   dbJob.JobID,
+		Args:    args,
+	}
+
+	err := jq.applyProcessMiddlewares(processContext, func(ctx JobProcessContext) error {
+		job := &Job[T]{
+			ID:   dbJob.JobID,
+			Args: args,
+		}
+		return jq.worker.Work(ctx, job)
+	})
+
+	if err != nil {
+		if dbJob.RetryAttempt < dbJob.MaxRetries {
+			jq.retryJob(ctx, jq.q, dbJob)
+		} else {
+			jq.markJobFailed(ctx, jq.q, dbJob, errors.New("maximum number of retries reached"))
+		}
+		return &internalerrs.WorkerFailedError{Err: err}
 	}
 
 	return nil
@@ -378,6 +459,7 @@ type jobQueueConfig struct {
 	queueName      string
 	dlqName        *string
 	logger         *slog.Logger
+	middlewares    []Middleware
 	pollInterval   time.Duration
 	baseRetryDelay time.Duration
 	maxRetryDelay  time.Duration
@@ -438,6 +520,14 @@ func WithDLQ(queueName string) JobQueueOption {
 		} else {
 			jqc.dlqName = &queueName
 		}
+	}
+}
+
+// WithMiddlewares adds the given middlewares to the JobQueue for both
+// enqueuing and processing jobs. They are applied in the order provided.
+func WithMiddlewares(mws ...Middleware) JobQueueOption {
+	return func(jqc *jobQueueConfig) {
+		jqc.middlewares = append(jqc.middlewares, mws...)
 	}
 }
 
