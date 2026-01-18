@@ -44,15 +44,17 @@ type Worker[T any] interface {
 // arguments.
 type JobEnqueueContext struct {
 	context.Context
-	Args any
+	Metdata map[string]any
+	Args    any
 }
 
 // JobProcessContext provides context for processing a job, including its ID
 // and arguments.
 type JobProcessContext struct {
 	context.Context
-	JobID int32
-	Args  any
+	JobID    int32
+	Metadata map[string]any
+	Args     any
 }
 
 // JobQueue manages the lifecycle of jobs in a named queue. It polls the
@@ -148,6 +150,9 @@ type Job[T any] struct {
 	// ID is the database identifier for the job.
 	ID int32
 
+	// Metadata contains meta information of a job stored as key-value pairs.
+	Metadata map[string]any
+
 	// Args contains the job payload of type T.
 	Args T
 }
@@ -171,6 +176,7 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 
 	enqueueCtx := JobEnqueueContext{
 		Context: ctx,
+		Metdata: make(map[string]any),
 		Args:    args,
 	}
 
@@ -181,11 +187,17 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 			return fmt.Errorf("failed to json encode job arguments: %w", err)
 		}
 
+		mb, err := json.Marshal(ctx.Metdata)
+		if err != nil {
+			return fmt.Errorf("failed to json encode job metadata: %w", err)
+		}
+
 		dbJob, err = jq.q.InsertJob(ctx, database.InsertJobParams{
 			QueueName:   jq.queueName,
 			Arguments:   b,
 			MaxRetries:  cfg.maxRetries,
 			RetryPolicy: cfg.retryPolicy,
+			Metadata:    mb,
 			ScheduledAt: pgtype.Timestamp{Time: time.Now().UTC(), Valid: true},
 		})
 		if err != nil {
@@ -198,8 +210,9 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 	}
 
 	return &Job[T]{
-		ID:   dbJob.JobID,
-		Args: args,
+		ID:       dbJob.JobID,
+		Metadata: enqueueCtx.Metdata,
+		Args:     args,
 	}, nil
 }
 
@@ -283,7 +296,12 @@ func (jq *JobQueue[T]) receiveConrurrent(ctx context.Context) error {
 		return err
 	}
 
-	if err := jq.processJobWithRetry(ctx, dbJob, args); err != nil {
+	metadata, err := jq.parseJobMetadata(ctx, jq.q, dbJob)
+	if err != nil {
+		return err
+	}
+
+	if err := jq.processJobWithRetry(ctx, dbJob, args, metadata); err != nil {
 		return err
 	}
 
@@ -320,7 +338,12 @@ func (jq *JobQueue[T]) receiveFIFO(ctx context.Context) error {
 		return err
 	}
 
-	if err := jq.processJobWithRetry(ctx, dbJob, args); err != nil {
+	metadata, err := jq.parseJobMetadata(ctx, dbtx, dbJob)
+	if err != nil {
+		return err
+	}
+
+	if err := jq.processJobWithRetry(ctx, dbJob, args, metadata); err != nil {
 		return err
 	}
 
@@ -371,18 +394,30 @@ func (jq *JobQueue[T]) parseJobArgs(ctx context.Context, dbtx database.Querier, 
 	return args, nil
 }
 
+// parseJobMetadata unmarshals the job metadata from JSON.
+func (jq *JobQueue[T]) parseJobMetadata(ctx context.Context, dbtx database.Querier, dbJob database.GoqueueJob) (map[string]any, error) {
+	var metadata map[string]any
+	if err := json.Unmarshal(dbJob.Metadata, &metadata); err != nil {
+		jq.markJobFailed(ctx, dbtx, dbJob, err)
+		return nil, &internalerrs.ReceiveJobError{Err: err}
+	}
+	return metadata, nil
+}
+
 // processJobWithRetry executes the job with retry logic on failure.
-func (jq *JobQueue[T]) processJobWithRetry(ctx context.Context, dbJob database.GoqueueJob, args T) error {
+func (jq *JobQueue[T]) processJobWithRetry(ctx context.Context, dbJob database.GoqueueJob, args T, metadata map[string]any) error {
 	processContext := JobProcessContext{
-		Context: ctx,
-		JobID:   dbJob.JobID,
-		Args:    args,
+		Context:  ctx,
+		JobID:    dbJob.JobID,
+		Metadata: metadata,
+		Args:     args,
 	}
 
 	err := jq.applyProcessMiddlewares(processContext, func(ctx JobProcessContext) error {
 		job := &Job[T]{
-			ID:   dbJob.JobID,
-			Args: args,
+			ID:       dbJob.JobID,
+			Metadata: metadata,
+			Args:     args,
 		}
 		return jq.worker.Work(ctx, job)
 	})

@@ -26,7 +26,7 @@ WHERE job_id = (
     ORDER BY j2.created_at
     LIMIT 1
 )
-RETURNING j.job_id, j.queue_name, j.created_at, j.started_at, j.finished_at, j.scheduled_at, j.max_retries, j.retry_attempt, j.retry_policy, j.status, j.error, j.arguments
+RETURNING j.job_id, j.queue_name, j.created_at, j.started_at, j.finished_at, j.scheduled_at, j.max_retries, j.retry_attempt, j.retry_policy, j.status, j.error, j.arguments, j.metadata
 `
 
 func (q *Queries) FetchJob(ctx context.Context, queueName string) (GoqueueJob, error) {
@@ -45,6 +45,7 @@ func (q *Queries) FetchJob(ctx context.Context, queueName string) (GoqueueJob, e
 		&i.Status,
 		&i.Error,
 		&i.Arguments,
+		&i.Metadata,
 	)
 	return i, err
 }
@@ -65,7 +66,7 @@ WHERE job_id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING j.job_id, j.queue_name, j.created_at, j.started_at, j.finished_at, j.scheduled_at, j.max_retries, j.retry_attempt, j.retry_policy, j.status, j.error, j.arguments
+RETURNING j.job_id, j.queue_name, j.created_at, j.started_at, j.finished_at, j.scheduled_at, j.max_retries, j.retry_attempt, j.retry_policy, j.status, j.error, j.arguments, j.metadata
 `
 
 func (q *Queries) FetchJobLocked(ctx context.Context, queueName string) (GoqueueJob, error) {
@@ -84,18 +85,20 @@ func (q *Queries) FetchJobLocked(ctx context.Context, queueName string) (Goqueue
 		&i.Status,
 		&i.Error,
 		&i.Arguments,
+		&i.Metadata,
 	)
 	return i, err
 }
 
 const insertJob = `-- name: InsertJob :one
-INSERT INTO goqueue_jobs (queue_name, created_at, status, scheduled_at, arguments, max_retries, retry_policy)
-VALUES ($1, NOW(), 'available', $2, $3, $4, $5)
-RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+INSERT INTO goqueue_jobs (queue_name, created_at, status, metadata, scheduled_at, arguments, max_retries, retry_policy)
+VALUES ($1, NOW(), 'available', $2, $3, $4, $5, $6)
+RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments, metadata
 `
 
 type InsertJobParams struct {
 	QueueName   string             `json:"queue_name"`
+	Metadata    []byte             `json:"metadata"`
 	ScheduledAt pgtype.Timestamp   `json:"scheduled_at"`
 	Arguments   []byte             `json:"arguments"`
 	MaxRetries  int32              `json:"max_retries"`
@@ -105,6 +108,7 @@ type InsertJobParams struct {
 func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJob, error) {
 	row := q.db.QueryRow(ctx, insertJob,
 		arg.QueueName,
+		arg.Metadata,
 		arg.ScheduledAt,
 		arg.Arguments,
 		arg.MaxRetries,
@@ -124,6 +128,7 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (GoqueueJo
 		&i.Status,
 		&i.Error,
 		&i.Arguments,
+		&i.Metadata,
 	)
 	return i, err
 }
@@ -136,7 +141,7 @@ SET
     retry_attempt = 0,
     scheduled_at = NOW()
 WHERE job_id = $2
-RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments, metadata
 `
 
 type MoveJobToDLQParams struct {
@@ -160,6 +165,7 @@ func (q *Queries) MoveJobToDLQ(ctx context.Context, arg MoveJobToDLQParams) (Goq
 		&i.Status,
 		&i.Error,
 		&i.Arguments,
+		&i.Metadata,
 	)
 	return i, err
 }
@@ -170,7 +176,7 @@ SET
     status = 'available',
     scheduled_at = $1
 WHERE job_id = $2
-RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments, metadata
 `
 
 type RescheduleJobParams struct {
@@ -194,6 +200,7 @@ func (q *Queries) RescheduleJob(ctx context.Context, arg RescheduleJobParams) (G
 		&i.Status,
 		&i.Error,
 		&i.Arguments,
+		&i.Metadata,
 	)
 	return i, err
 }
@@ -206,7 +213,7 @@ SET created_at = $1,
     error = $4,
     arguments = $5
 WHERE job_id = $6
-RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments, metadata
 `
 
 type UpdateJobParams struct {
@@ -241,6 +248,7 @@ func (q *Queries) UpdateJob(ctx context.Context, arg UpdateJobParams) (GoqueueJo
 		&i.Status,
 		&i.Error,
 		&i.Arguments,
+		&i.Metadata,
 	)
 	return i, err
 }
@@ -251,7 +259,7 @@ SET
     status = 'failed',
     error = $1
 WHERE job_id = $2
-RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments, metadata
 `
 
 type UpdateJobFailedParams struct {
@@ -275,6 +283,7 @@ func (q *Queries) UpdateJobFailed(ctx context.Context, arg UpdateJobFailedParams
 		&i.Status,
 		&i.Error,
 		&i.Arguments,
+		&i.Metadata,
 	)
 	return i, err
 }
@@ -285,7 +294,7 @@ SET
     status = 'finished',
     finished_at = NOW()
 WHERE job_id = $1
-RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments, metadata
 `
 
 func (q *Queries) UpdateJobFinished(ctx context.Context, jobID int32) (GoqueueJob, error) {
@@ -304,6 +313,7 @@ func (q *Queries) UpdateJobFinished(ctx context.Context, jobID int32) (GoqueueJo
 		&i.Status,
 		&i.Error,
 		&i.Arguments,
+		&i.Metadata,
 	)
 	return i, err
 }
@@ -312,7 +322,7 @@ const updateJobStatus = `-- name: UpdateJobStatus :one
 UPDATE goqueue_jobs
 SET status = $1
 WHERE job_id = $2
-RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments
+RETURNING job_id, queue_name, created_at, started_at, finished_at, scheduled_at, max_retries, retry_attempt, retry_policy, status, error, arguments, metadata
 `
 
 type UpdateJobStatusParams struct {
@@ -336,6 +346,7 @@ func (q *Queries) UpdateJobStatus(ctx context.Context, arg UpdateJobStatusParams
 		&i.Status,
 		&i.Error,
 		&i.Arguments,
+		&i.Metadata,
 	)
 	return i, err
 }

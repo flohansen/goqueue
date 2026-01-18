@@ -111,6 +111,7 @@ type GoqueueJob struct {
 	Status       GoqueueJobStatus   `json:"status"`
 	Error        pgtype.Text        `json:"error"`
 	Arguments    []byte             `json:"arguments"`
+	Metadata     []byte             `json:"metadata"`
 }
 
 type GoqueueQueue struct {
