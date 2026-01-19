@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/flohansen/goqueue"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -116,6 +118,7 @@ func (w *testWorker) Work(ctx context.Context, job *goqueue.Job[testArgs]) error
 	delay := time.Duration(rand.Intn(200)) * time.Millisecond
 	time.Sleep(delay)
 
-	w.logger.Info("processed job", "job_id", job.ID, "value", string(job.Args.Value))
+	traceID := trace.SpanFromContext(ctx).SpanContext().TraceID()
+	w.logger.Info("processed job", "job_id", job.ID, "value", string(job.Args.Value), "job_metadata", job.Metadata, "trace_id", traceID.String())
 	return nil
 }
