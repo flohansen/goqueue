@@ -3,7 +3,7 @@ module github.com/flohansen/goqueue/contrib
 go 1.25.5
 
 require (
-	github.com/flohansen/goqueue v0.0.0-20260116190629-b28381b95468
+	github.com/flohansen/goqueue v0.1.0
 	go.opentelemetry.io/otel v1.39.0
 	go.opentelemetry.io/otel/trace v1.39.0
 )
@@ -22,6 +22,5 @@ require (
 	go.opentelemetry.io/otel/metric v1.39.0 // indirect
 	golang.org/x/crypto v0.45.0 // indirect
 	golang.org/x/sync v0.18.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 )
