@@ -3,7 +3,7 @@ module github.com/flohansen/goqueue/examples
 go 1.25.5
 
 require (
-	github.com/flohansen/goqueue v0.0.0
+	github.com/flohansen/goqueue v0.1.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
