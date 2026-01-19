@@ -44,8 +44,18 @@ type Worker[T any] interface {
 // arguments.
 type JobEnqueueContext struct {
 	context.Context
-	Metdata map[string]any
-	Args    any
+	Metadata map[string]any
+	Args     any
+}
+
+// WithContext returns a copy of the JobEnqueueContext with the provided
+// context.
+func (ectx JobEnqueueContext) WithContext(ctx context.Context) JobEnqueueContext {
+	return JobEnqueueContext{
+		Context:  ctx,
+		Metadata: ectx.Metadata,
+		Args:     ectx.Args,
+	}
 }
 
 // JobProcessContext provides context for processing a job, including its ID
@@ -55,6 +65,17 @@ type JobProcessContext struct {
 	JobID    int32
 	Metadata map[string]any
 	Args     any
+}
+
+// WithContext returns a copy of the JobProcessContext with the provided
+// context.
+func (pctx JobProcessContext) WithContext(ctx context.Context) JobProcessContext {
+	return JobProcessContext{
+		Context:  ctx,
+		JobID:    pctx.JobID,
+		Metadata: pctx.Metadata,
+		Args:     pctx.Args,
+	}
 }
 
 // JobQueue manages the lifecycle of jobs in a named queue. It polls the
@@ -175,9 +196,9 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 	}
 
 	enqueueCtx := JobEnqueueContext{
-		Context: ctx,
-		Metdata: make(map[string]any),
-		Args:    args,
+		Context:  ctx,
+		Metadata: make(map[string]any),
+		Args:     args,
 	}
 
 	var dbJob database.GoqueueJob
@@ -187,7 +208,7 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 			return fmt.Errorf("failed to json encode job arguments: %w", err)
 		}
 
-		mb, err := json.Marshal(ctx.Metdata)
+		mb, err := json.Marshal(ctx.Metadata)
 		if err != nil {
 			return fmt.Errorf("failed to json encode job metadata: %w", err)
 		}
@@ -211,7 +232,7 @@ func (jq *JobQueue[T]) Enqueue(ctx context.Context, args T, opts ...EnqueueOptio
 
 	return &Job[T]{
 		ID:       dbJob.JobID,
-		Metadata: enqueueCtx.Metdata,
+		Metadata: enqueueCtx.Metadata,
 		Args:     args,
 	}, nil
 }
