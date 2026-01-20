@@ -14,6 +14,8 @@ A simple, efficient, and reliable queue implementation for Go with PostgreSQL ba
   - [Available Commands](#available-commands)
   - [Testing](#testing)
   - [Working with SQL](#working-with-sql)
+- [Dead Letter Queue](#dead-letter-queue)
+- [Middleware](#middleware)
 - [Using Nix (Optional)](#using-nix-optional)
 - [Contributing](#contributing)
 - [License](#license)
@@ -128,6 +130,44 @@ The dead letter queue (DLQ) feature provides a robust way to handle jobs that fa
 - **Debugging**: Analyze failed jobs to identify issues in your processing logic
 - **Recovery**: Reprocess failed jobs once underlying issues are resolved
 - **Data Integrity**: Ensure no job is silently dropped due to failures
+
+## Middleware
+
+Middleware provides a flexible way to extend job processing with custom logic. Middleware implements the `Middleware` interface with two methods:
+- `Enqueue(next EnqueueHandler) EnqueueHandler` - wraps job enqueuing
+- `Process(next ProcessHandler) ProcessHandler` - wraps job processing
+
+### Usage
+
+Create a middleware by implementing the `Middleware` interface:
+
+```go
+type MyMiddleware struct {}
+
+func (m *MyMiddleware) Enqueue(next goqueue.EnqueueHandler) goqueue.EnqueueHandler {
+	return func(ctx goqueue.JobEnqueueContext) error {
+		// Custom logic before enqueuing
+		return next(ctx)
+	}
+}
+
+func (m *MyMiddleware) Process(next goqueue.ProcessHandler) goqueue.ProcessHandler {
+	return func(ctx goqueue.JobProcessContext) error {
+		// Custom logic before processing
+		err := next(ctx)
+		// Custom logic after processing
+		return err
+	}
+}
+```
+
+Register middleware when creating the queue:
+
+```go
+queue := goqueue.New(db, worker,
+	goqueue.WithMiddlewares(&MyMiddleware{}),
+)
+```
 
 ## Using Nix (Optional)
 
